@@ -1,6 +1,9 @@
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use tokio::net::{TcpListener, ToSocketAddrs};
 
+mod parse;
 #[async_trait]
 pub trait MiddleMan<K> {
     async fn request(&self, data: &[u8]) -> K;
@@ -16,7 +19,13 @@ impl<T> MitmProxy<T> {
         Self { middle_man }
     }
 
-    pub async fn serve<A: ToSocketAddrs>(&self, addr: A) -> Result<(), std::io::Error> {
+    async fn handle(&self, stream: tokio::net::TcpStream) {
+        todo!()
+    }
+}
+
+impl<T: Send + Sync + 'static> MitmProxy<T> {
+    pub async fn serve<A: ToSocketAddrs>(proxy: Arc<Self>, addr: A) -> Result<(), std::io::Error> {
         let listener = TcpListener::bind(addr).await?;
 
         loop {
@@ -25,9 +34,8 @@ impl<T> MitmProxy<T> {
                 continue;
             };
 
-            todo!()
+            let proxy = proxy.clone();
+            tokio::spawn(async move { proxy.handle(stream).await });
         }
-
-        Ok(())
     }
 }
