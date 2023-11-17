@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use tokio::net::{TcpListener, ToSocketAddrs};
 
 #[async_trait]
 pub trait MiddleMan<K> {
@@ -13,5 +14,20 @@ pub struct MitmProxy<T> {
 impl<T> MitmProxy<T> {
     pub fn new(middle_man: T) -> Self {
         Self { middle_man }
+    }
+
+    pub async fn serve<A: ToSocketAddrs>(&self, addr: A) -> Result<(), std::io::Error> {
+        let listener = TcpListener::bind(addr).await?;
+
+        loop {
+            let stream = listener.accept().await;
+            let Ok((stream, _)) = stream else {
+                continue;
+            };
+
+            todo!()
+        }
+
+        Ok(())
     }
 }
