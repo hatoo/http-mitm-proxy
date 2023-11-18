@@ -29,7 +29,7 @@ fn is_request_end<'a, 'b>(
                 .into_iter()
                 .take_while(|h| h != &&httparse::EMPTY_HEADER)
             {
-                if header.name.to_lowercase().as_str() == "content-length" {
+                if header.name.eq_ignore_ascii_case("content-length") {
                     let len: usize = std::str::from_utf8(header.value)
                         .map_err(|_| ParseError::BadContentLength)?
                         .parse()
@@ -62,7 +62,7 @@ pub async fn read_req<S: AsyncReadExt + Unpin>(
                 .into_iter()
                 .take_while(|h| h != &&httparse::EMPTY_HEADER)
                 .any(|h| {
-                    h.name.to_lowercase().as_str() == "connection"
+                    h.name.eq_ignore_ascii_case("connection")
                         && std::str::from_utf8(h.value)
                             .map(|s| s.to_lowercase().contains("upgrade"))
                             == Ok(true)
@@ -91,7 +91,7 @@ pub fn parse_path(buf: &[u8]) -> Option<[String; 3]> {
         .ok()
 }
 
-pub fn replace_path(buf: Vec<u8>) -> Option<Vec<u8>> {
+pub fn replace_path(buf: Vec<u8>, replace_connection: bool) -> Option<Vec<u8>> {
     let mut lines = buf.split_inclusive(|&b| b == b'\n');
 
     let first_line = lines.next()?.strip_suffix(b"\r\n")?;
@@ -111,19 +111,21 @@ pub fn replace_path(buf: Vec<u8>) -> Option<Vec<u8>> {
 
     let mut in_header = true;
 
-    ret.extend(b"Connection: close\r\n");
+    if replace_connection {
+        ret.extend(b"Connection: close\r\n");
+    }
     for line in lines {
         if in_header {
-            if line.starts_with(b"Connection") {
+            if (replace_connection && line.starts_with(b"Connection"))
+                || line.starts_with(b"Proxy-")
+            {
                 continue;
             }
             if line == b"\r\n" {
                 in_header = false;
             }
-            ret.extend(line.strip_prefix(b"Proxy-").unwrap_or(line));
-        } else {
-            ret.extend(line);
         }
+        ret.extend(line);
     }
 
     Some(ret)
