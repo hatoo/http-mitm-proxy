@@ -2,15 +2,17 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use http::Uri;
-use request::{parse_path, read_req, replace_path};
+use parse::{
+    request::{parse_path, read_req, replace_path},
+    response::{read_resp, response_type, ResponseType},
+};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, ToSocketAddrs},
 };
 
-mod request;
+mod parse;
 
-const MAX_HEADERS: usize = 100;
 #[async_trait]
 pub trait MiddleMan<K> {
     async fn request(&self, data: &[u8]) -> K;
@@ -53,24 +55,73 @@ impl<T: MiddleMan<K> + Send + Sync + 'static, K: Sync + Send + 'static> MitmProx
             let [_method, url, _version] = parse_path(&buf).unwrap();
             let url = Uri::try_from(url).unwrap();
 
-            let mut server = tokio::net::TcpStream::connect((
-                url.authority().unwrap().as_str(),
-                url.port_u16().unwrap_or(80),
-            ))
-            .await
-            .unwrap();
-
             let req = replace_path(buf, !is_upgrade).unwrap();
 
             let key = self.middle_man.request(&req).await;
 
+            let mut server =
+                tokio::net::TcpStream::connect((url.host().unwrap(), url.port_u16().unwrap_or(80)))
+                    .await
+                    .unwrap();
             server.write_all(&req).await.unwrap();
-            let mut res = Vec::new();
-            server.read_to_end(&mut res).await.unwrap();
-            stream.write_all(&res).await.unwrap();
+            let mut resp = read_resp(&mut server).await.unwrap().unwrap();
 
-            self.middle_man.response(key, &res).await;
-            // TODO: handle websocket and SSE
+            match response_type(&resp).unwrap() {
+                ResponseType::Normal => {
+                    let _ = server.read_to_end(&mut resp).await;
+                    stream.write_all(&resp).await.unwrap();
+                    self.middle_man.response(key, &resp).await;
+                }
+                ResponseType::Sse => {
+                    stream.write_all(&resp).await.unwrap();
+
+                    loop {
+                        let n = server.read_buf(&mut resp).await.unwrap();
+                        if n == 0 {
+                            break;
+                        }
+                        stream.write_all(&resp[resp.len() - n..]).await.unwrap();
+                    }
+
+                    return;
+                }
+                ResponseType::Upgrade => {
+                    stream.write_all(&resp).await.unwrap();
+
+                    let mut resp = Vec::new();
+                    let mut forward = [0u8; 4 * 1024];
+                    loop {
+                        tokio::select! {
+                            res = server.read_buf(&mut resp) => {
+                                if let Ok(n) = res {
+                                    if n == 0 {
+                                        break;
+                                    }
+                                    if stream.write_all(&resp[resp.len() - n..]).await.is_err() {
+                                        break;
+                                    }
+                                } else {
+                                    break;
+                                }
+                            }
+                            res = stream.read(&mut forward) => {
+                                if let Ok(n) = res {
+                                    if n == 0 {
+                                        break;
+                                    }
+                                    if server.write_all(&forward[..n]).await.is_err() {
+                                        break;
+                                    }
+                                } else {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
+                    return;
+                }
+            }
         }
     }
 }

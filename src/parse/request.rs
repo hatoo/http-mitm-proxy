@@ -1,19 +1,8 @@
 use http::Uri;
 use httparse::{Header, Request, Status};
-use thiserror::Error;
 use tokio::io::AsyncReadExt;
 
-use crate::MAX_HEADERS;
-
-#[derive(Error, Debug)]
-pub enum ParseError {
-    #[error("io error")]
-    Io(#[from] std::io::Error),
-    #[error("httparse error")]
-    Parse(#[from] httparse::Error),
-    #[error("Bad Content-Length")]
-    BadContentLength,
-}
+use super::{ParseError, MAX_HEADERS};
 
 fn is_request_end<'a, 'b>(
     buf: &'a [u8],
