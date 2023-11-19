@@ -18,7 +18,7 @@ impl MiddleMan<()> for SimpleMan {
 #[tokio::main]
 async fn main() {
     let proxy = MitmProxy::new(SimpleMan);
-    MitmProxy::serve(Arc::new(proxy), "127.0.0.1:3003")
+    MitmProxy::bind(Arc::new(proxy), "127.0.0.1:3003")
         .await
         .unwrap();
 }

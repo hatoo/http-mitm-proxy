@@ -1,7 +1,4 @@
-use std::{
-    sync::{atomic::AtomicU16, Arc},
-    time::Duration,
-};
+use std::sync::{atomic::AtomicU16, Arc};
 
 use axum::{routing::get, Router};
 use http_mitm_proxy::{MiddleMan, MitmProxy};
@@ -48,21 +45,31 @@ impl MiddleMan<()> for ChannelMan {
     }
 }
 
+fn body_str(body: &[u8]) -> &str {
+    let mut headers = [httparse::EMPTY_HEADER; 100];
+    let mut res = httparse::Response::new(&mut headers);
+    let body_start = res.parse(&body).unwrap().unwrap();
+
+    std::str::from_utf8(&body[body_start..]).unwrap()
+}
+
 #[tokio::test]
 async fn test_hello_world() {
     let (server_port, server) = hello_world_server().await;
 
     tokio::spawn(server);
 
-    let (req_tx, req_rx) = tokio::sync::mpsc::unbounded_channel();
-    let (res_tx, res_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (req_tx, mut req_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (res_tx, mut res_rx) = tokio::sync::mpsc::unbounded_channel();
 
     let proxy = http_mitm_proxy::MitmProxy::new(ChannelMan::new(req_tx, res_tx));
 
     let proxy_port = get_port();
-    tokio::spawn(MitmProxy::serve(Arc::new(proxy), ("127.0.0.1", proxy_port)));
-
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    tokio::spawn(
+        MitmProxy::bind(Arc::new(proxy), ("127.0.0.1", proxy_port))
+            .await
+            .unwrap(),
+    );
 
     let client = reqwest::Client::builder()
         .proxy(reqwest::Proxy::http(format!("http://127.0.0.1:{}", proxy_port)).unwrap())
@@ -74,4 +81,9 @@ async fn test_hello_world() {
         .send()
         .await
         .unwrap();
+
+    let req = req_rx.recv().await.unwrap();
+    let res = res_rx.recv().await.unwrap();
+
+    assert_eq!(body_str(&res), "Hello, World!");
 }

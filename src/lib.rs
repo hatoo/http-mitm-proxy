@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{future::Future, sync::Arc};
 
 use async_trait::async_trait;
 use http::Uri;
@@ -36,18 +36,23 @@ impl<T, K> MitmProxy<T, K> {
 impl<T: Send + Sync + 'static, K: Sync> MitmProxy<T, K> {}
 
 impl<T: MiddleMan<K> + Send + Sync + 'static, K: Sync + Send + 'static> MitmProxy<T, K> {
-    pub async fn serve<A: ToSocketAddrs>(proxy: Arc<Self>, addr: A) -> Result<(), std::io::Error> {
+    pub async fn bind<A: ToSocketAddrs>(
+        proxy: Arc<Self>,
+        addr: A,
+    ) -> Result<impl Future<Output = ()>, std::io::Error> {
         let listener = TcpListener::bind(addr).await?;
 
-        loop {
-            let stream = listener.accept().await;
-            let Ok((stream, _)) = stream else {
-                continue;
-            };
+        Ok(async move {
+            loop {
+                let stream = listener.accept().await;
+                let Ok((stream, _)) = stream else {
+                    continue;
+                };
 
-            let proxy = proxy.clone();
-            tokio::spawn(async move { proxy.handle(stream).await });
-        }
+                let proxy = proxy.clone();
+                tokio::spawn(async move { proxy.handle(stream).await });
+            }
+        })
     }
 
     async fn handle(&self, mut stream: tokio::net::TcpStream) {
