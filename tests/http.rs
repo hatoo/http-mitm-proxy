@@ -2,7 +2,8 @@ use std::sync::{atomic::AtomicU16, Arc};
 
 use axum::{routing::get, Router};
 use http_mitm_proxy::{MiddleMan, MitmProxy};
-use tokio::sync::mpsc::UnboundedSender;
+use reqwest::Client;
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 static PORT: AtomicU16 = AtomicU16::new(3666);
 
@@ -60,19 +61,25 @@ fn client(proxy_port: u16) -> reqwest::Client {
         .unwrap()
 }
 
-#[tokio::test]
-async fn test_hello_world() {
-    let (server_port, server) =
-        bind_app(Router::new().route("/", get(|| async { "Hello, World!" }))).await;
+struct Setup {
+    proxy_port: u16,
+    server_port: u16,
+    rx_req: UnboundedReceiver<Vec<u8>>,
+    rx_res: UnboundedReceiver<Vec<u8>>,
+    client: Client,
+}
+
+async fn setup(app: Router) -> Setup {
+    let (server_port, server) = bind_app(app).await;
 
     tokio::spawn(server);
 
-    let (req_tx, mut req_rx) = tokio::sync::mpsc::unbounded_channel();
-    let (res_tx, mut res_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (req_tx, rx_req) = tokio::sync::mpsc::unbounded_channel();
+    let (res_tx, rx_res) = tokio::sync::mpsc::unbounded_channel();
 
     let proxy = http_mitm_proxy::MitmProxy::new(ChannelMan::new(req_tx, res_tx));
-
     let proxy_port = get_port();
+
     tokio::spawn(
         MitmProxy::bind(Arc::new(proxy), ("127.0.0.1", proxy_port))
             .await
@@ -81,14 +88,52 @@ async fn test_hello_world() {
 
     let client = client(proxy_port);
 
-    client
-        .get(format!("http://127.0.0.1:{}/", server_port))
+    Setup {
+        proxy_port,
+        server_port,
+        rx_req,
+        rx_res,
+        client,
+    }
+}
+
+#[tokio::test]
+async fn test_simple() {
+    let app = Router::new().route("/", get(|| async { "Hello, World!" }));
+
+    let mut setup = setup(app).await;
+
+    setup
+        .client
+        .get(format!("http://127.0.0.1:{}/", setup.server_port))
         .send()
         .await
         .unwrap();
 
-    let req = req_rx.recv().await.unwrap();
-    let res = res_rx.recv().await.unwrap();
+    let req = setup.rx_req.recv().await.unwrap();
+    let res = setup.rx_res.recv().await.unwrap();
 
     assert_eq!(body_str(&res), "Hello, World!");
+}
+
+#[tokio::test]
+async fn test_multiple() {
+    let app = Router::new().route("/", get(|| async { "Hello, World!" }));
+
+    let mut setup = setup(app).await;
+
+    // reqwest would use single connection with keep-alive
+    for _ in 0..16 {
+        setup
+            .client
+            .get(format!("http://127.0.0.1:{}/", setup.server_port))
+            .send()
+            .await
+            .unwrap();
+
+        let req = setup.rx_req.recv().await.unwrap();
+        let res = setup.rx_res.recv().await.unwrap();
+
+        assert_eq!(body_str(&res), "Hello, World!");
+    }
 }
