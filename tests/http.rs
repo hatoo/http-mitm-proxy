@@ -10,12 +10,12 @@ fn get_port() -> u16 {
     PORT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
-async fn hello_world_server() -> (
+async fn bind_app(
+    app: Router,
+) -> (
     u16,
     impl std::future::Future<Output = Result<(), std::io::Error>>,
 ) {
-    let app = Router::new().route("/", get(|| async { "Hello, World!" }));
-
     let port = get_port();
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
         .await
@@ -53,9 +53,17 @@ fn body_str(body: &[u8]) -> &str {
     std::str::from_utf8(&body[body_start..]).unwrap()
 }
 
+fn client(proxy_port: u16) -> reqwest::Client {
+    reqwest::Client::builder()
+        .proxy(reqwest::Proxy::http(format!("http://127.0.0.1:{}", proxy_port)).unwrap())
+        .build()
+        .unwrap()
+}
+
 #[tokio::test]
 async fn test_hello_world() {
-    let (server_port, server) = hello_world_server().await;
+    let (server_port, server) =
+        bind_app(Router::new().route("/", get(|| async { "Hello, World!" }))).await;
 
     tokio::spawn(server);
 
@@ -71,10 +79,7 @@ async fn test_hello_world() {
             .unwrap(),
     );
 
-    let client = reqwest::Client::builder()
-        .proxy(reqwest::Proxy::http(format!("http://127.0.0.1:{}", proxy_port)).unwrap())
-        .build()
-        .unwrap();
+    let client = client(proxy_port);
 
     client
         .get(format!("http://127.0.0.1:{}/", server_port))
