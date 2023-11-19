@@ -11,3 +11,7 @@ http = "1.0.0"
 httparse = "1.8.0"
 thiserror = "1.0.50"
 tokio = { version = "1.34.0", features = ["full"] }
+
+[dev-dependencies]
+axum = { git = "https://github.com/tokio-rs/axum.git" }
+reqwest = "0.11.22"
