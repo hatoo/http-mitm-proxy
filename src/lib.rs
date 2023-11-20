@@ -78,6 +78,7 @@ impl<T: MiddleMan<K> + Send + Sync + 'static, K: Sync + Send + 'static> MitmProx
                     self.middle_man.response(key, &resp).await;
                 }
                 ResponseType::Sse => {
+                    // TODO: Send events to middleman in real time.
                     stream.write_all(&resp).await.unwrap();
 
                     loop {
@@ -87,10 +88,12 @@ impl<T: MiddleMan<K> + Send + Sync + 'static, K: Sync + Send + 'static> MitmProx
                         }
                         stream.write_all(&resp[resp.len() - n..]).await.unwrap();
                     }
+                    self.middle_man.response(key, &resp).await;
 
                     return;
                 }
                 ResponseType::Upgrade => {
+                    // TODO: handle 101 with body. It should be rare.
                     stream.write_all(&resp).await.unwrap();
 
                     let mut resp = Vec::new();

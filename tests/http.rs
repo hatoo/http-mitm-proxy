@@ -1,6 +1,14 @@
-use std::sync::{atomic::AtomicU16, Arc};
+use std::{
+    convert::Infallible,
+    sync::{atomic::AtomicU16, Arc},
+};
 
-use axum::{routing::get, Router};
+use axum::{
+    response::{sse::Event, Sse},
+    routing::get,
+    Router,
+};
+use futures::stream;
 use http::{header, HeaderMap, HeaderName};
 use http_mitm_proxy::{MiddleMan, MitmProxy};
 use reqwest::Client;
@@ -136,12 +144,15 @@ async fn test_simple() {
 
     let mut setup = setup(app).await;
 
-    setup
+    let response = setup
         .client
         .get(format!("http://127.0.0.1:{}/", setup.server_port))
         .send()
         .await
         .unwrap();
+
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.bytes().await.unwrap().as_ref(), b"Hello, World!");
 
     let req = setup.rx_req.recv().await.unwrap();
     let req_headers = req_headers(&req);
@@ -155,7 +166,7 @@ async fn test_simple() {
 }
 
 #[tokio::test]
-async fn test_multiple() {
+async fn test_keep_alive() {
     let app = Router::new().route("/", get(|| async { "Hello, World!" }));
 
     let mut setup = setup(app).await;
@@ -174,4 +185,30 @@ async fn test_multiple() {
 
         assert_eq!(body_str(&res), "Hello, World!");
     }
+}
+
+#[tokio::test]
+async fn test_sse() {
+    let app = Router::new().route(
+        "/sse",
+        get(|| async {
+            Sse::new(stream::iter(
+                ["1", "2", "3"]
+                    .into_iter()
+                    .map(|s| Ok::<Event, Infallible>(Event::default().data(s))),
+            ))
+        }),
+    );
+
+    let mut setup = setup(app).await;
+    setup
+        .client
+        .get(format!("http://127.0.0.1:{}/sse", setup.server_port))
+        .send()
+        .await
+        .unwrap();
+
+    let req = setup.rx_res.recv().await.unwrap();
+
+    dbg!(String::from_utf8(req).unwrap());
 }
