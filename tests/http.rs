@@ -1,6 +1,7 @@
 use std::sync::{atomic::AtomicU16, Arc};
 
 use axum::{routing::get, Router};
+use http::{header, HeaderMap, HeaderName};
 use http_mitm_proxy::{MiddleMan, MitmProxy};
 use reqwest::Client;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
@@ -97,6 +98,38 @@ async fn setup(app: Router) -> Setup {
     }
 }
 
+fn req_headers(buf: &[u8]) -> HeaderMap {
+    let mut headers = [httparse::EMPTY_HEADER; 100];
+    let mut req = httparse::Request::new(&mut headers);
+    let _ = req.parse(&buf).unwrap().unwrap();
+
+    let mut map = HeaderMap::new();
+    for header in req.headers.iter() {
+        map.insert(
+            HeaderName::from_bytes(header.name.as_bytes()).unwrap(),
+            std::str::from_utf8(header.value).unwrap().parse().unwrap(),
+        );
+    }
+
+    map
+}
+
+fn res_headers(buf: &[u8]) -> HeaderMap {
+    let mut headers = [httparse::EMPTY_HEADER; 100];
+    let mut res = httparse::Response::new(&mut headers);
+    let _ = res.parse(&buf).unwrap().unwrap();
+
+    let mut map = HeaderMap::new();
+    for header in res.headers.iter() {
+        map.insert(
+            HeaderName::from_bytes(header.name.as_bytes()).unwrap(),
+            std::str::from_utf8(header.value).unwrap().parse().unwrap(),
+        );
+    }
+
+    map
+}
+
 #[tokio::test]
 async fn test_simple() {
     let app = Router::new().route("/", get(|| async { "Hello, World!" }));
@@ -111,6 +144,11 @@ async fn test_simple() {
         .unwrap();
 
     let req = setup.rx_req.recv().await.unwrap();
+    let req_headers = req_headers(&req);
+    assert_eq!(
+        req_headers.get(header::HOST).unwrap().as_bytes(),
+        format!("127.0.0.1:{}", setup.server_port).as_bytes()
+    );
     let res = setup.rx_res.recv().await.unwrap();
 
     assert_eq!(body_str(&res), "Hello, World!");
@@ -122,7 +160,7 @@ async fn test_multiple() {
 
     let mut setup = setup(app).await;
 
-    // reqwest would use single connection with keep-alive
+    // reqwest wii use single connection with keep-alive
     for _ in 0..16 {
         setup
             .client
