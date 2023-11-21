@@ -102,24 +102,27 @@ async fn proxy<M: MiddleMan<K> + Send + Sync + 'static, K: Send + 'static>(
     let (req_parts, body) = req.into_parts();
     let (body, rx) = dup_body(body);
 
+    let res = tokio::spawn(sender.send_request(Request::from_parts(
+        req_parts.clone(),
+        StreamBody::new(body),
+    )));
+
     let key = middle_man
         .request(Request::from_parts(req_parts.clone(), rx))
         .await;
 
-    let res = sender
-        .send_request(Request::from_parts(
-            req_parts.clone(),
-            StreamBody::new(body),
-        ))
-        .await?;
-
+    let res = res.await.unwrap()?;
     let status = res.status();
     let (parts, body) = res.into_parts();
     let (body, rx) = dup_body(body);
 
-    let key = middle_man
-        .response(key, Response::from_parts(parts.clone(), rx))
-        .await;
+    let middle_man2 = middle_man.clone();
+    let parts2 = parts.clone();
+    let key = tokio::spawn(async move {
+        middle_man2
+            .response(key, Response::from_parts(parts2, rx))
+            .await
+    });
 
     if status == StatusCode::SWITCHING_PROTOCOLS {
         let res_parts = parts.clone();
@@ -171,6 +174,7 @@ async fn proxy<M: MiddleMan<K> + Send + Sync + 'static, K: Send + 'static>(
                         }
                     });
 
+                    let key = key.await.unwrap();
                     middle_man.upgrade(key, rx_client, rx_server).await;
                 }
                 (Err(e), _) => eprintln!("upgrade error: {}", e),

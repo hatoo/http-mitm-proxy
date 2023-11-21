@@ -1,7 +1,4 @@
-use std::{
-    convert::Infallible,
-    sync::{atomic::AtomicU16, Arc},
-};
+use std::{convert::Infallible, sync::atomic::AtomicU16};
 
 use axum::{
     response::{sse::Event, Sse},
@@ -10,9 +7,9 @@ use axum::{
 };
 use futures::{
     channel::mpsc::{unbounded, UnboundedReceiver, UnboundedSender},
-    stream, SinkExt, StreamExt,
+    stream, StreamExt,
 };
-use http_mitm_proxy::{MiddleMan, MitmProxy};
+use http_mitm_proxy::MiddleMan;
 use hyper::{header, Request, Response};
 use reqwest::Client;
 
