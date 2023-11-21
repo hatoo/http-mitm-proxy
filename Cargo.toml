@@ -16,5 +16,4 @@ pin-project-lite = "0.2.13"
 
 [dev-dependencies]
 axum = "0.6"
-dashmap = "5.5.3"
 reqwest = "0.11.22"
