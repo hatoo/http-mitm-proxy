@@ -1,16 +1,19 @@
 use std::{convert::Infallible, sync::atomic::AtomicU16};
 
 use axum::{
-    response::{sse::Event, Sse},
+    extract::ws::{Message, WebSocket, WebSocketUpgrade},
+    response::{sse::Event, IntoResponse, Sse},
     routing::get,
     Router,
 };
+use bytes::Bytes;
 use futures::{
     channel::mpsc::{unbounded, UnboundedReceiver, UnboundedSender},
     stream, StreamExt,
 };
-use http_mitm_proxy::MiddleMan;
-use hyper::{header, Request, Response};
+use http_body_util::{BodyExt, Empty};
+use http_mitm_proxy::{tokiort::TokioIo, MiddleMan};
+use hyper::{header, Request, Response, Uri};
 use reqwest::Client;
 
 static PORT: AtomicU16 = AtomicU16::new(3666);
@@ -57,9 +60,7 @@ impl MiddleMan<()> for ChannelMan {
         self.res_tx.unbounded_send(res).unwrap();
     }
 
-    async fn upgrade(&self, _: (), _: UnboundedReceiver<Vec<u8>>, _: UnboundedReceiver<Vec<u8>>) {
-        unimplemented!()
-    }
+    async fn upgrade(&self, _: (), _: UnboundedReceiver<Vec<u8>>, _: UnboundedReceiver<Vec<u8>>) {}
 }
 
 fn client(proxy_port: u16) -> reqwest::Client {
@@ -183,4 +184,54 @@ async fn test_sse() {
         body,
         b"event:message\ndata:1\n\nevent:message\ndata:2\n\nevent:message\ndata:3\n\n"
     );
+}
+
+#[tokio::test]
+async fn test_upgrade() {
+    let app = Router::new().route("/ws", get(ws_handler));
+    let setup = setup(app).await;
+
+    let stream = tokio::net::TcpStream::connect(("127.0.0.1", setup.proxy_port))
+        .await
+        .unwrap();
+    let io = TokioIo::new(stream);
+    let (mut send_request, conn) = hyper::client::conn::http1::handshake(io).await.unwrap();
+    tokio::spawn(conn.with_upgrades());
+    let mut res = send_request
+        .send_request(
+            Request::get(
+                Uri::try_from(format!("http://127.0.0.1:{}/ws", setup.server_port)).unwrap(),
+            )
+            .header(header::UPGRADE, "websocket")
+            .header(header::CONNECTION, "Upgrade")
+            .header(header::SEC_WEBSOCKET_KEY, "dGhlIHNhbXBsZSBub25jZQ==")
+            .header(header::SEC_WEBSOCKET_VERSION, "13")
+            .body(Empty::<Bytes>::new())
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    res.body_mut().collect().await.unwrap();
+    let _stream = hyper::upgrade::on(res).await.unwrap();
+    // FIXME: there are no websocket library supports proxy.
+}
+
+async fn ws_handler(ws: WebSocketUpgrade) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| handle_socket(socket))
+}
+
+async fn handle_socket(mut socket: WebSocket) {
+    // receive single message from a client (we can either receive or send with socket).
+    // this will likely be the Pong for our Ping or a hello message from client.
+    // waiting for message from a client will block this task, but will not block other client's
+    // connections.
+    if let Some(msg) = socket.recv().await {
+        let _ = msg.unwrap();
+    }
+
+    socket
+        .send(Message::Text("Hello, World!".to_string()))
+        .await
+        .unwrap();
 }

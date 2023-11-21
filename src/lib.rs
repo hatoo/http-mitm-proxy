@@ -18,7 +18,7 @@ use tokiort::TokioIo;
 pub use futures;
 pub use hyper;
 
-mod tokiort;
+pub mod tokiort;
 
 #[async_trait]
 pub trait MiddleMan<K> {
