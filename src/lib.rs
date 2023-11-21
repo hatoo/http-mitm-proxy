@@ -15,6 +15,9 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, ToSocketAddrs};
 use tokiort::TokioIo;
 
+pub use futures;
+pub use hyper;
+
 mod tokiort;
 
 #[async_trait]
@@ -42,8 +45,6 @@ impl<T, K> MitmProxy<T, K> {
         }
     }
 }
-
-impl<T: Send + Sync + 'static, K: Sync> MitmProxy<T, K> {}
 
 impl<T: MiddleMan<K> + Send + Sync + 'static, K: Sync + Send + 'static> MitmProxy<T, K> {
     pub async fn bind<A: ToSocketAddrs>(

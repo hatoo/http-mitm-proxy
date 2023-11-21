@@ -179,5 +179,8 @@ async fn test_sse() {
     let res = setup.rx_res.next().await.unwrap();
     let body = res.into_body().concat().await;
 
-    dbg!(String::from_utf8(body).unwrap());
+    assert_eq!(
+        body,
+        b"event:message\ndata:1\n\nevent:message\ndata:2\n\nevent:message\ndata:3\n\n"
+    );
 }
