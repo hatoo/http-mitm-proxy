@@ -1,27 +1,26 @@
 use std::{future::Future, sync::Arc};
 
 use async_trait::async_trait;
-use http::Uri;
-use parse::{
-    request::{parse_path, read_req, replace_path},
-    response::{read_resp, response_type, ResponseType},
+use bytes::Bytes;
+use futures::{channel::mpsc::UnboundedReceiver, Stream};
+use http_body_util::{BodyExt, StreamBody};
+use hyper::{
+    body::{Body, Frame, Incoming},
+    client,
+    server::{self},
+    service::service_fn,
+    Request, Response,
 };
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::{TcpListener, ToSocketAddrs},
-};
+use tokio::net::{TcpListener, TcpStream, ToSocketAddrs};
+use tokiort::TokioIo;
 
 mod parse;
+mod tokiort;
 
 #[async_trait]
 pub trait MiddleMan<K> {
-    async fn request(&self, data: &[u8]) -> K;
-    // For simple http response which isn't SSE or websocket.
-    async fn response(&self, key: K, data: &[u8]);
-    // For sse response
-    // It doesn't guarantee that data is split by something meaningful.
-    // response will be called when connection is closed (with 0 length data).
-    async fn recv(&self, _key: &K, _data: &[u8]) {}
+    async fn request(&self, req: Request<UnboundedReceiver<Vec<u8>>>) -> K;
+    async fn response(&self, key: K, res: Response<UnboundedReceiver<Vec<u8>>>);
 }
 
 pub struct MitmProxy<T, K> {
@@ -60,83 +59,74 @@ impl<T: MiddleMan<K> + Send + Sync + 'static, K: Sync + Send + 'static> MitmProx
         })
     }
 
-    async fn handle(&self, mut stream: tokio::net::TcpStream) {
-        while let Ok(Some((buf, is_upgrade))) = read_req(&mut stream).await {
-            let [_method, url, _version] = parse_path(&buf).unwrap();
-            let url = Uri::try_from(url).unwrap();
+    async fn handle(&self, stream: tokio::net::TcpStream) {
+        let _ = server::conn::http1::Builder::new()
+            .preserve_header_case(true)
+            .title_case_headers(true)
+            .serve_connection(TokioIo::new(stream), service_fn(|req| self.proxy(req)))
+            .with_upgrades()
+            .await;
+    }
 
-            let req = replace_path(buf, !is_upgrade).unwrap();
+    async fn proxy(
+        &self,
+        req: Request<hyper::body::Incoming>,
+    ) -> Result<Response<impl Body<Data = Bytes, Error = hyper::Error>>, hyper::Error> {
+        let host = req.uri().host().unwrap();
+        let port = req.uri().port_u16().unwrap_or(80);
 
-            let key = self.middle_man.request(&req).await;
+        let stream = TcpStream::connect((host, port)).await.unwrap();
 
-            let mut server =
-                tokio::net::TcpStream::connect((url.host().unwrap(), url.port_u16().unwrap_or(80)))
-                    .await
-                    .unwrap();
-            server.write_all(&req).await.unwrap();
-            let mut resp = read_resp(&mut server).await.unwrap().unwrap();
+        let (mut sender, conn) = client::conn::http1::Builder::new()
+            .preserve_header_case(true)
+            .title_case_headers(true)
+            .handshake(TokioIo::new(stream))
+            .await?;
 
-            match response_type(&resp).unwrap() {
-                ResponseType::Normal => {
-                    let _ = server.read_to_end(&mut resp).await;
-                    stream.write_all(&resp).await.unwrap();
-                    self.middle_man.response(key, &resp).await;
-                }
-                ResponseType::Sse => {
-                    stream.write_all(&resp).await.unwrap();
-                    self.middle_man.recv(&key, &resp).await;
+        tokio::spawn(conn);
 
-                    loop {
-                        resp.clear();
-                        let n = server.read_buf(&mut resp).await.unwrap();
-                        if n == 0 {
-                            break;
-                        }
-                        stream.write_all(&resp).await.unwrap();
-                        self.middle_man.recv(&key, &resp).await;
-                    }
-                    self.middle_man.response(key, &[]).await;
+        let (parts, body) = req.into_parts();
+        let (body, rx) = dup_body(body);
 
-                    return;
-                }
-                ResponseType::Upgrade => {
-                    // TODO: handle 101 with body. It should be rare.
-                    stream.write_all(&resp).await.unwrap();
+        let key = self
+            .middle_man
+            .request(Request::from_parts(parts.clone(), rx))
+            .await;
 
-                    let mut resp = Vec::new();
-                    let mut forward = [0u8; 4 * 1024];
-                    loop {
-                        tokio::select! {
-                            res = server.read_buf(&mut resp) => {
-                                if let Ok(n) = res {
-                                    if n == 0 {
-                                        break;
-                                    }
-                                    if stream.write_all(&resp[resp.len() - n..]).await.is_err() {
-                                        break;
-                                    }
-                                } else {
-                                    break;
-                                }
-                            }
-                            res = stream.read(&mut forward) => {
-                                if let Ok(n) = res {
-                                    if n == 0 {
-                                        break;
-                                    }
-                                    if server.write_all(&forward[..n]).await.is_err() {
-                                        break;
-                                    }
-                                } else {
-                                    break;
-                                }
-                            }
-                        }
-                    }
+        let res = sender
+            .send_request(Request::from_parts(parts, StreamBody::new(body)))
+            .await?;
 
-                    return;
+        let (parts, body) = res.into_parts();
+        let (body, rx) = dup_body(body);
+
+        self.middle_man
+            .response(key, Response::from_parts(parts.clone(), rx))
+            .await;
+
+        Ok(Response::from_parts(parts, StreamBody::new(body)))
+    }
+}
+
+fn dup_body(
+    body: Incoming,
+) -> (
+    StreamBody<impl Stream<Item = Result<Frame<Bytes>, hyper::Error>>>,
+    UnboundedReceiver<Vec<u8>>,
+) {
+    let (tx, rx) = futures::channel::mpsc::unbounded();
+    let body = futures::stream::unfold((body, tx), |(mut body, tx)| async move {
+        if let Some(frame) = body.frame().await {
+            if let Ok(frame) = frame.as_ref() {
+                if let Some(data) = frame.data_ref() {
+                    let _ = tx.unbounded_send(data.to_vec());
                 }
             }
+            Some((frame, (body, tx)))
+        } else {
+            None
         }
-    }
+    });
+
+    (StreamBody::new(body), rx)
 }
