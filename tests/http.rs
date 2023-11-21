@@ -86,7 +86,7 @@ async fn setup(app: Router) -> Setup {
     let (req_tx, rx_req) = unbounded();
     let (res_tx, rx_res) = unbounded();
 
-    let proxy = http_mitm_proxy::MitmProxy::new(ChannelMan::new(req_tx, res_tx));
+    let proxy = http_mitm_proxy::MitmProxy::new(ChannelMan::new(req_tx, res_tx), None);
     let proxy_port = get_port();
 
     tokio::spawn(proxy.bind(("127.0.0.1", proxy_port)).await.unwrap());

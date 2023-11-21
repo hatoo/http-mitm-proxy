@@ -1,18 +1,20 @@
-use std::{future::Future, sync::Arc};
-
 use async_trait::async_trait;
 use bytes::Bytes;
-use futures::{channel::mpsc::UnboundedReceiver, Stream};
-use http_body_util::{BodyExt, Empty, StreamBody};
+use futures::{channel::mpsc::UnboundedReceiver, stream, Stream};
+use http_body_util::{combinators::BoxBody, BodyExt, Empty, StreamBody};
 use hyper::{
     body::{Body, Frame, Incoming},
-    client,
+    client::{self, conn::http1::SendRequest},
     server::{self},
     service::service_fn,
-    Request, Response, StatusCode,
+    Method, Request, Response, StatusCode,
 };
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use std::{future::Future, sync::Arc};
 use tokio::net::{TcpListener, TcpStream, ToSocketAddrs};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    sync::Mutex,
+};
 use tokiort::TokioIo;
 
 pub use futures;
@@ -65,6 +67,10 @@ impl<T, K> MitmProxy<T, K> {
     pub fn middle_man(&self) -> &T {
         &self.inner.middle_man
     }
+
+    pub fn root_cert(&self) -> Option<&rcgen::Certificate> {
+        self.inner.root_cert.as_ref()
+    }
 }
 
 impl<T: MiddleMan<K> + Send + Sync + 'static, K: Sync + Send + 'static> MitmProxy<T, K> {
@@ -101,109 +107,209 @@ impl<T: MiddleMan<K> + Send + Sync + 'static, K: Sync + Send + 'static> MitmProx
     async fn proxy(
         &self,
         req: Request<hyper::body::Incoming>,
-    ) -> Result<Response<impl Body<Data = Bytes, Error = hyper::Error>>, hyper::Error> {
-        let host = req.uri().host().unwrap();
-        let port = req.uri().port_u16().unwrap_or(80);
+    ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Error> {
+        if req.method() == Method::CONNECT {
+            let uri = req.uri().clone();
 
-        let stream = TcpStream::connect((host, port)).await.unwrap();
-
-        let (mut sender, conn) = client::conn::http1::Builder::new()
-            .preserve_header_case(true)
-            .title_case_headers(true)
-            .handshake(TokioIo::new(stream))
-            .await?;
-
-        tokio::spawn(conn.with_upgrades());
-
-        let (req_parts, body) = req.into_parts();
-        let (body, rx) = dup_body(body);
-
-        let res = tokio::spawn(sender.send_request(Request::from_parts(
-            req_parts.clone(),
-            StreamBody::new(body),
-        )));
-
-        // Used tokio::spawn above to middle_man can consume rx in request()
-        let key = self
-            .middle_man()
-            .request(Request::from_parts(req_parts.clone(), rx))
-            .await;
-
-        let res = res.await.unwrap()?;
-        let status = res.status();
-        let (parts, body) = res.into_parts();
-        let (body, rx) = dup_body(body);
-
-        let proxy = self.clone();
-        let parts2 = parts.clone();
-        let key = tokio::spawn(async move {
-            proxy
-                .middle_man()
-                .response(key, Response::from_parts(parts2, rx))
-                .await
-        });
-
-        // https://developer.mozilla.org/ja/docs/Web/HTTP/Status/101
-        if status == StatusCode::SWITCHING_PROTOCOLS {
-            let res_parts = parts.clone();
             let proxy = self.clone();
-            tokio::task::spawn(async move {
-                match (
-                    hyper::upgrade::on(Request::from_parts(req_parts, Empty::<Bytes>::new())).await,
-                    hyper::upgrade::on(Response::from_parts(res_parts, Empty::<Bytes>::new()))
-                        .await,
-                ) {
-                    (Ok(client), Ok(server)) => {
-                        let (tx_client, rx_client) = futures::channel::mpsc::unbounded();
-                        let (tx_server, rx_server) = futures::channel::mpsc::unbounded();
+            tokio::spawn(async move {
+                let addr = uri.authority().unwrap().to_string();
+                let host = uri.host().unwrap();
 
-                        let mut client = TokioIo::new(client);
-                        let mut server = TokioIo::new(server);
-                        tokio::spawn(async move {
-                            let mut buf1 = Vec::new();
-                            let mut buf2 = Vec::new();
-                            loop {
-                                buf1.clear();
-                                buf2.clear();
-                                tokio::select! {
-                                    r = client.read_buf(&mut buf1) => {
-                                        if r.is_err() {
-                                            break;
-                                        }
-                                        if let Ok(0) = r {
-                                            break;
-                                        }
-                                        if server.write_all(&buf1).await.is_err() {
-                                            break;
-                                        }
-                                        let _ = tx_client.unbounded_send(buf1.clone());
-                                    }
+                let client = hyper::upgrade::on(req).await.unwrap();
+                let server = TcpStream::connect(addr).await.unwrap();
 
-                                    r = server.read_buf(&mut buf2) => {
-                                        if r.is_err() {
-                                            break;
-                                        }
-                                        if let Ok(0) = r {
-                                            break;
-                                        }
-                                        if client.write_all(&buf2).await.is_err() {
-                                            break;
-                                        }
-                                        let _ = tx_server.unbounded_send(buf2.clone());
-                                    }
+                if let Some(root_cert) = proxy.root_cert() {
+                    let mut cert_params = rcgen::CertificateParams::new(vec![host.into()]);
+                    cert_params
+                        .key_usages
+                        .push(rcgen::KeyUsagePurpose::DigitalSignature);
+                    cert_params
+                        .extended_key_usages
+                        .push(rcgen::ExtendedKeyUsagePurpose::ServerAuth);
+                    cert_params
+                        .extended_key_usages
+                        .push(rcgen::ExtendedKeyUsagePurpose::ClientAuth);
+
+                    let cert = rcgen::Certificate::from_params(cert_params).unwrap();
+                    let signed = cert.serialize_der_with_signer(root_cert).unwrap();
+                    let private_key = cert.get_key_pair().serialize_der();
+                    let server_config = rustls::ServerConfig::builder()
+                        .with_safe_defaults()
+                        .with_no_client_auth()
+                        .with_single_cert(
+                            vec![rustls::Certificate(signed)],
+                            rustls::PrivateKey(private_key),
+                        )
+                        .unwrap();
+                    // TODO: Cache server_config
+                    let server_config = Arc::new(server_config);
+                    let tls_acceptor = tokio_rustls::TlsAcceptor::from(server_config);
+                    let client = tls_acceptor.accept(TokioIo::new(client)).await.unwrap();
+
+                    let server = TcpStream::connect(uri.authority().unwrap().as_str())
+                        .await
+                        .unwrap();
+                    let native_tls_connector =
+                        tokio_native_tls::native_tls::TlsConnector::new().unwrap();
+                    let connector = tokio_native_tls::TlsConnector::from(native_tls_connector);
+                    let server = connector
+                        .connect(uri.host().unwrap(), server)
+                        .await
+                        .unwrap();
+                    let (sender, conn) = client::conn::http1::Builder::new()
+                        .preserve_header_case(true)
+                        .title_case_headers(true)
+                        .handshake(TokioIo::new(server))
+                        .await
+                        .unwrap();
+
+                    tokio::spawn(conn.with_upgrades());
+
+                    let host = host.to_string();
+                    let sender = Arc::new(Mutex::new(sender));
+                    let _ = server::conn::http1::Builder::new()
+                        .preserve_header_case(true)
+                        .title_case_headers(true)
+                        .serve_connection(
+                            TokioIo::new(client),
+                            service_fn(|req| {
+                                let proxy = proxy.clone();
+                                let host = host.clone();
+                                let sender = sender.clone();
+
+                                async move {
+                                    let mut lock = sender.lock().await;
+                                    proxy.mitm_tunnel(req, &host, &mut lock).await
                                 }
-                            }
-                        });
-
-                        let key = key.await.unwrap();
-                        proxy.middle_man().upgrade(key, rx_client, rx_server).await;
-                    }
-                    (Err(e), _) => eprintln!("upgrade error: {}", e),
-                    _ => todo!(),
+                            }),
+                        )
+                        .with_upgrades()
+                        .await;
+                } else {
+                    todo!()
                 }
             });
+
+            Ok(Response::new(
+                http_body_util::Empty::new()
+                    .map_err(|never| match never {})
+                    .boxed(),
+            ))
+        } else {
+            let host = req.uri().host().unwrap();
+            let port = req.uri().port_u16().unwrap_or(80);
+
+            let stream = TcpStream::connect((host, port)).await.unwrap();
+
+            let (mut sender, conn) = client::conn::http1::Builder::new()
+                .preserve_header_case(true)
+                .title_case_headers(true)
+                .handshake(TokioIo::new(stream))
+                .await?;
+
+            tokio::spawn(conn.with_upgrades());
+
+            let (req_parts, body) = req.into_parts();
+            let (body, rx) = dup_body(body);
+
+            let res = tokio::spawn(sender.send_request(Request::from_parts(
+                req_parts.clone(),
+                StreamBody::new(body),
+            )));
+
+            // Used tokio::spawn above to middle_man can consume rx in request()
+            let key = self
+                .middle_man()
+                .request(Request::from_parts(req_parts.clone(), rx))
+                .await;
+
+            let res = res.await.unwrap()?;
+            let status = res.status();
+            let (parts, body) = res.into_parts();
+            let (body, rx) = dup_body(body);
+
+            let proxy = self.clone();
+            let parts2 = parts.clone();
+            let key = tokio::spawn(async move {
+                proxy
+                    .middle_man()
+                    .response(key, Response::from_parts(parts2, rx))
+                    .await
+            });
+
+            // https://developer.mozilla.org/ja/docs/Web/HTTP/Status/101
+            if status == StatusCode::SWITCHING_PROTOCOLS {
+                let res_parts = parts.clone();
+                let proxy = self.clone();
+                tokio::task::spawn(async move {
+                    match (
+                        hyper::upgrade::on(Request::from_parts(req_parts, Empty::<Bytes>::new()))
+                            .await,
+                        hyper::upgrade::on(Response::from_parts(res_parts, Empty::<Bytes>::new()))
+                            .await,
+                    ) {
+                        (Ok(client), Ok(server)) => {
+                            let (tx_client, rx_client) = futures::channel::mpsc::unbounded();
+                            let (tx_server, rx_server) = futures::channel::mpsc::unbounded();
+
+                            let mut client = TokioIo::new(client);
+                            let mut server = TokioIo::new(server);
+                            tokio::spawn(async move {
+                                let mut buf1 = Vec::new();
+                                let mut buf2 = Vec::new();
+                                loop {
+                                    buf1.clear();
+                                    buf2.clear();
+                                    tokio::select! {
+                                        r = client.read_buf(&mut buf1) => {
+                                            if r.is_err() {
+                                                break;
+                                            }
+                                            if let Ok(0) = r {
+                                                break;
+                                            }
+                                            if server.write_all(&buf1).await.is_err() {
+                                                break;
+                                            }
+                                            let _ = tx_client.unbounded_send(buf1.clone());
+                                        }
+
+                                        r = server.read_buf(&mut buf2) => {
+                                            if r.is_err() {
+                                                break;
+                                            }
+                                            if let Ok(0) = r {
+                                                break;
+                                            }
+                                            if client.write_all(&buf2).await.is_err() {
+                                                break;
+                                            }
+                                            let _ = tx_server.unbounded_send(buf2.clone());
+                                        }
+                                    }
+                                }
+                            });
+
+                            let key = key.await.unwrap();
+                            proxy.middle_man().upgrade(key, rx_client, rx_server).await;
+                        }
+                        (Err(e), _) => eprintln!("upgrade error: {}", e),
+                        _ => todo!(),
+                    }
+                });
+            }
+            Ok(Response::from_parts(parts, StreamBody::new(body).boxed()))
         }
-        Ok(Response::from_parts(parts, StreamBody::new(body)))
+    }
+
+    async fn mitm_tunnel(
+        &self,
+        req: Request<hyper::body::Incoming>,
+        host: &str,
+        sender: &mut SendRequest<Incoming>,
+    ) -> Result<Response<impl Body<Data = Bytes, Error = hyper::Error>>, hyper::Error> {
+        sender.send_request(req).await
     }
 }
 
