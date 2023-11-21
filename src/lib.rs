@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use bytes::Bytes;
-use futures::{channel::mpsc::UnboundedReceiver, stream, Stream};
+use futures::{channel::mpsc::UnboundedReceiver, Stream};
 use http_body_util::{combinators::BoxBody, BodyExt, Empty, StreamBody};
 use hyper::{
     body::{Body, Frame, Incoming},
@@ -10,6 +10,7 @@ use hyper::{
     Method, Request, Response, StatusCode,
 };
 use std::{future::Future, sync::Arc};
+use tls::server_config;
 use tokio::net::{TcpListener, TcpStream, ToSocketAddrs};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -20,6 +21,7 @@ use tokiort::TokioIo;
 pub use futures;
 pub use hyper;
 
+mod tls;
 pub mod tokiort;
 
 #[async_trait]
@@ -117,31 +119,9 @@ impl<T: MiddleMan<K> + Send + Sync + 'static, K: Sync + Send + 'static> MitmProx
                 let host = uri.host().unwrap();
 
                 let client = hyper::upgrade::on(req).await.unwrap();
-                let server = TcpStream::connect(addr).await.unwrap();
 
                 if let Some(root_cert) = proxy.root_cert() {
-                    let mut cert_params = rcgen::CertificateParams::new(vec![host.into()]);
-                    cert_params
-                        .key_usages
-                        .push(rcgen::KeyUsagePurpose::DigitalSignature);
-                    cert_params
-                        .extended_key_usages
-                        .push(rcgen::ExtendedKeyUsagePurpose::ServerAuth);
-                    cert_params
-                        .extended_key_usages
-                        .push(rcgen::ExtendedKeyUsagePurpose::ClientAuth);
-
-                    let cert = rcgen::Certificate::from_params(cert_params).unwrap();
-                    let signed = cert.serialize_der_with_signer(root_cert).unwrap();
-                    let private_key = cert.get_key_pair().serialize_der();
-                    let server_config = rustls::ServerConfig::builder()
-                        .with_safe_defaults()
-                        .with_no_client_auth()
-                        .with_single_cert(
-                            vec![rustls::Certificate(signed)],
-                            rustls::PrivateKey(private_key),
-                        )
-                        .unwrap();
+                    let server_config = server_config(host.to_string(), root_cert).unwrap();
                     // TODO: Cache server_config
                     let server_config = Arc::new(server_config);
                     let tls_acceptor = tokio_rustls::TlsAcceptor::from(server_config);
