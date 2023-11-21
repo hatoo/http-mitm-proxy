@@ -125,6 +125,7 @@ async fn proxy<M: MiddleMan<K> + Send + Sync + 'static, K: Send + 'static>(
             .await
     });
 
+    // https://developer.mozilla.org/ja/docs/Web/HTTP/Status/101
     if status == StatusCode::SWITCHING_PROTOCOLS {
         let res_parts = parts.clone();
         tokio::task::spawn(async move {
@@ -182,10 +183,8 @@ async fn proxy<M: MiddleMan<K> + Send + Sync + 'static, K: Send + 'static>(
                 _ => todo!(),
             }
         });
-        Ok(Response::from_parts(parts, StreamBody::new(body)))
-    } else {
-        Ok(Response::from_parts(parts, StreamBody::new(body)))
     }
+    Ok(Response::from_parts(parts, StreamBody::new(body)))
 }
 
 fn dup_body(
