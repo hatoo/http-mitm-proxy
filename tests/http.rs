@@ -59,6 +59,10 @@ impl MiddleMan<()> for ChannelMan {
     async fn response(&self, _: (), res: Response<UnboundedReceiver<Vec<u8>>>) {
         self.res_tx.unbounded_send(res).unwrap();
     }
+
+    async fn upgrade(&self, _: (), _: UnboundedReceiver<Vec<u8>>, _: UnboundedReceiver<Vec<u8>>) {
+        unimplemented!()
+    }
 }
 
 fn client(proxy_port: u16) -> reqwest::Client {
@@ -87,11 +91,7 @@ async fn setup(app: Router) -> Setup {
     let proxy = http_mitm_proxy::MitmProxy::new(ChannelMan::new(req_tx, res_tx));
     let proxy_port = get_port();
 
-    tokio::spawn(
-        MitmProxy::bind(Arc::new(proxy), ("127.0.0.1", proxy_port))
-            .await
-            .unwrap(),
-    );
+    tokio::spawn(proxy.bind(("127.0.0.1", proxy_port)).await.unwrap());
 
     let client = client(proxy_port);
 
