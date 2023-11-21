@@ -1,6 +1,9 @@
 use std::{
     convert::Infallible,
-    sync::{atomic::AtomicU16, Arc},
+    sync::{
+        atomic::{AtomicU16, AtomicUsize},
+        Arc,
+    },
 };
 
 use axum::{
@@ -34,24 +37,39 @@ async fn bind_app(
 }
 
 struct ChannelMan {
+    serial: AtomicUsize,
     req_tx: UnboundedSender<Vec<u8>>,
     res_tx: UnboundedSender<Vec<u8>>,
+    sse: dashmap::DashMap<usize, Vec<u8>>,
 }
 
 impl ChannelMan {
     fn new(req_tx: UnboundedSender<Vec<u8>>, res_tx: UnboundedSender<Vec<u8>>) -> Self {
-        Self { req_tx, res_tx }
+        Self {
+            serial: AtomicUsize::new(0),
+            req_tx,
+            res_tx,
+            sse: Default::default(),
+        }
     }
 }
 
 #[async_trait::async_trait]
-impl MiddleMan<()> for ChannelMan {
-    async fn request(&self, data: &[u8]) -> () {
+impl MiddleMan<usize> for ChannelMan {
+    async fn request(&self, data: &[u8]) -> usize {
         self.req_tx.send(data.to_vec()).unwrap();
+        self.serial
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     }
 
-    async fn response(&self, _key: (), data: &[u8]) {
-        self.res_tx.send(data.to_vec()).unwrap();
+    async fn response(&self, key: usize, data: &[u8]) {
+        let (_, mut body) = self.sse.remove(&key).unwrap_or_default();
+        body.extend_from_slice(data);
+        self.res_tx.send(body).unwrap();
+    }
+
+    async fn recv(&self, key: &usize, data: &[u8]) {
+        self.sse.entry(*key).or_default().extend_from_slice(data);
     }
 }
 
@@ -192,11 +210,9 @@ async fn test_sse() {
     let app = Router::new().route(
         "/sse",
         get(|| async {
-            Sse::new(stream::iter(
-                ["1", "2", "3"]
-                    .into_iter()
-                    .map(|s| Ok::<Event, Infallible>(Event::default().data(s))),
-            ))
+            Sse::new(stream::iter(["1", "2", "3"].into_iter().map(|s| {
+                Ok::<Event, Infallible>(Event::default().event("message").data(s))
+            })))
         }),
     );
 

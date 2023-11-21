@@ -16,7 +16,12 @@ mod parse;
 #[async_trait]
 pub trait MiddleMan<K> {
     async fn request(&self, data: &[u8]) -> K;
+    // For simple http response which isn't SSE or websocket.
     async fn response(&self, key: K, data: &[u8]);
+    // For sse response
+    // It doesn't guarantee that data is split by something meaningful.
+    // response will be called when connection is closed (with 0 length data).
+    async fn recv(&self, _key: &K, _data: &[u8]) {}
 }
 
 pub struct MitmProxy<T, K> {
@@ -78,17 +83,19 @@ impl<T: MiddleMan<K> + Send + Sync + 'static, K: Sync + Send + 'static> MitmProx
                     self.middle_man.response(key, &resp).await;
                 }
                 ResponseType::Sse => {
-                    // TODO: Send events to middleman in real time.
                     stream.write_all(&resp).await.unwrap();
+                    self.middle_man.recv(&key, &resp).await;
 
                     loop {
+                        resp.clear();
                         let n = server.read_buf(&mut resp).await.unwrap();
                         if n == 0 {
                             break;
                         }
-                        stream.write_all(&resp[resp.len() - n..]).await.unwrap();
+                        stream.write_all(&resp).await.unwrap();
+                        self.middle_man.recv(&key, &resp).await;
                     }
-                    self.middle_man.response(key, &resp).await;
+                    self.middle_man.response(key, &[]).await;
 
                     return;
                 }
