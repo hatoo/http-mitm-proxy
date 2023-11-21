@@ -33,7 +33,8 @@ pub trait MiddleMan<K> {
 }
 
 pub struct MitmProxy<T, K> {
-    middle_man: Arc<T>,
+    // No reason to hide
+    pub middle_man: Arc<T>,
     _phantom: std::marker::PhantomData<K>,
 }
 
