@@ -107,6 +107,7 @@ async fn proxy<M: MiddleMan<K> + Send + Sync + 'static, K: Send + 'static>(
         StreamBody::new(body),
     )));
 
+    // Used tokio::spawn above to middle_man can consume rx in request()
     let key = middle_man
         .request(Request::from_parts(req_parts.clone(), rx))
         .await;
@@ -152,10 +153,10 @@ async fn proxy<M: MiddleMan<K> + Send + Sync + 'static, K: Send + 'static>(
                                     if let Ok(0) = r {
                                         break;
                                     }
-                                    let _ = tx_client.unbounded_send(buf1.clone());
                                     if server.write_all(&buf1).await.is_err() {
                                         break;
                                     }
+                                    let _ = tx_client.unbounded_send(buf1.clone());
                                 }
 
                                 r = server.read_buf(&mut buf2) => {
@@ -165,10 +166,10 @@ async fn proxy<M: MiddleMan<K> + Send + Sync + 'static, K: Send + 'static>(
                                     if let Ok(0) = r {
                                         break;
                                     }
-                                    let _ = tx_server.unbounded_send(buf2.clone());
                                     if client.write_all(&buf2).await.is_err() {
                                         break;
                                     }
+                                    let _ = tx_server.unbounded_send(buf2.clone());
                                 }
                             }
                         }
