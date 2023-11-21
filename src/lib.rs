@@ -14,7 +14,6 @@ use hyper::{
 use tokio::net::{TcpListener, TcpStream, ToSocketAddrs};
 use tokiort::TokioIo;
 
-mod parse;
 mod tokiort;
 
 #[async_trait]

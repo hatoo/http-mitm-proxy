@@ -1,9 +1,6 @@
 use std::{
     convert::Infallible,
-    sync::{
-        atomic::{AtomicU16, AtomicUsize},
-        Arc,
-    },
+    sync::{atomic::AtomicU16, Arc},
 };
 
 use axum::{
@@ -11,11 +8,13 @@ use axum::{
     routing::get,
     Router,
 };
-use futures::stream;
-use http::{header, HeaderMap, HeaderName};
+use futures::{
+    channel::mpsc::{unbounded, UnboundedReceiver, UnboundedSender},
+    stream, SinkExt, StreamExt,
+};
 use http_mitm_proxy::{MiddleMan, MitmProxy};
+use hyper::{header, Request, Response};
 use reqwest::Client;
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 static PORT: AtomicU16 = AtomicU16::new(3666);
 
@@ -23,62 +22,43 @@ fn get_port() -> u16 {
     PORT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
-async fn bind_app(
-    app: Router,
-) -> (
-    u16,
-    impl std::future::Future<Output = Result<(), std::io::Error>>,
-) {
+async fn bind_app(app: Router) -> (u16, impl std::future::Future<Output = ()>) {
     let port = get_port();
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
         .await
         .unwrap();
-    (port, axum::serve(listener, app))
+    (port, async {
+        axum::Server::from_tcp(listener.into_std().unwrap())
+            .unwrap()
+            .serve(app.into_make_service())
+            .await
+            .unwrap()
+    })
 }
 
 struct ChannelMan {
-    serial: AtomicUsize,
-    req_tx: UnboundedSender<Vec<u8>>,
-    res_tx: UnboundedSender<Vec<u8>>,
-    sse: dashmap::DashMap<usize, Vec<u8>>,
+    req_tx: UnboundedSender<Request<UnboundedReceiver<Vec<u8>>>>,
+    res_tx: UnboundedSender<Response<UnboundedReceiver<Vec<u8>>>>,
 }
 
 impl ChannelMan {
-    fn new(req_tx: UnboundedSender<Vec<u8>>, res_tx: UnboundedSender<Vec<u8>>) -> Self {
-        Self {
-            serial: AtomicUsize::new(0),
-            req_tx,
-            res_tx,
-            sse: Default::default(),
-        }
+    fn new(
+        req_tx: UnboundedSender<Request<UnboundedReceiver<Vec<u8>>>>,
+        res_tx: UnboundedSender<Response<UnboundedReceiver<Vec<u8>>>>,
+    ) -> Self {
+        Self { req_tx, res_tx }
     }
 }
 
 #[async_trait::async_trait]
-impl MiddleMan<usize> for ChannelMan {
-    async fn request(&self, data: &[u8]) -> usize {
-        self.req_tx.send(data.to_vec()).unwrap();
-        self.serial
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+impl MiddleMan<()> for ChannelMan {
+    async fn request(&self, req: Request<UnboundedReceiver<Vec<u8>>>) {
+        self.req_tx.unbounded_send(req).unwrap();
     }
 
-    async fn response(&self, key: usize, data: &[u8]) {
-        let (_, mut body) = self.sse.remove(&key).unwrap_or_default();
-        body.extend_from_slice(data);
-        self.res_tx.send(body).unwrap();
+    async fn response(&self, _: (), res: Response<UnboundedReceiver<Vec<u8>>>) {
+        self.res_tx.unbounded_send(res).unwrap();
     }
-
-    async fn recv(&self, key: &usize, data: &[u8]) {
-        self.sse.entry(*key).or_default().extend_from_slice(data);
-    }
-}
-
-fn body_str(body: &[u8]) -> &str {
-    let mut headers = [httparse::EMPTY_HEADER; 100];
-    let mut res = httparse::Response::new(&mut headers);
-    let body_start = res.parse(&body).unwrap().unwrap();
-
-    std::str::from_utf8(&body[body_start..]).unwrap()
 }
 
 fn client(proxy_port: u16) -> reqwest::Client {
@@ -91,8 +71,8 @@ fn client(proxy_port: u16) -> reqwest::Client {
 struct Setup {
     proxy_port: u16,
     server_port: u16,
-    rx_req: UnboundedReceiver<Vec<u8>>,
-    rx_res: UnboundedReceiver<Vec<u8>>,
+    rx_req: UnboundedReceiver<Request<UnboundedReceiver<Vec<u8>>>>,
+    rx_res: UnboundedReceiver<Response<UnboundedReceiver<Vec<u8>>>>,
     client: Client,
 }
 
@@ -101,8 +81,8 @@ async fn setup(app: Router) -> Setup {
 
     tokio::spawn(server);
 
-    let (req_tx, rx_req) = tokio::sync::mpsc::unbounded_channel();
-    let (res_tx, rx_res) = tokio::sync::mpsc::unbounded_channel();
+    let (req_tx, rx_req) = unbounded();
+    let (res_tx, rx_res) = unbounded();
 
     let proxy = http_mitm_proxy::MitmProxy::new(ChannelMan::new(req_tx, res_tx));
     let proxy_port = get_port();
@@ -124,38 +104,6 @@ async fn setup(app: Router) -> Setup {
     }
 }
 
-fn req_headers(buf: &[u8]) -> HeaderMap {
-    let mut headers = [httparse::EMPTY_HEADER; 100];
-    let mut req = httparse::Request::new(&mut headers);
-    let _ = req.parse(&buf).unwrap().unwrap();
-
-    let mut map = HeaderMap::new();
-    for header in req.headers.iter() {
-        map.insert(
-            HeaderName::from_bytes(header.name.as_bytes()).unwrap(),
-            std::str::from_utf8(header.value).unwrap().parse().unwrap(),
-        );
-    }
-
-    map
-}
-
-fn res_headers(buf: &[u8]) -> HeaderMap {
-    let mut headers = [httparse::EMPTY_HEADER; 100];
-    let mut res = httparse::Response::new(&mut headers);
-    let _ = res.parse(&buf).unwrap().unwrap();
-
-    let mut map = HeaderMap::new();
-    for header in res.headers.iter() {
-        map.insert(
-            HeaderName::from_bytes(header.name.as_bytes()).unwrap(),
-            std::str::from_utf8(header.value).unwrap().parse().unwrap(),
-        );
-    }
-
-    map
-}
-
 #[tokio::test]
 async fn test_simple() {
     let app = Router::new().route("/", get(|| async { "Hello, World!" }));
@@ -172,15 +120,16 @@ async fn test_simple() {
     assert_eq!(response.status(), 200);
     assert_eq!(response.bytes().await.unwrap().as_ref(), b"Hello, World!");
 
-    let req = setup.rx_req.recv().await.unwrap();
-    let req_headers = req_headers(&req);
+    let req = setup.rx_req.next().await.unwrap();
     assert_eq!(
-        req_headers.get(header::HOST).unwrap().as_bytes(),
+        req.headers().get(header::HOST).unwrap(),
         format!("127.0.0.1:{}", setup.server_port).as_bytes()
     );
-    let res = setup.rx_res.recv().await.unwrap();
+    let res = setup.rx_res.next().await.unwrap();
 
-    assert_eq!(body_str(&res), "Hello, World!");
+    let body = res.into_body().concat().await;
+
+    assert_eq!(String::from_utf8(body).unwrap(), "Hello, World!");
 }
 
 #[tokio::test]
@@ -198,10 +147,16 @@ async fn test_keep_alive() {
             .await
             .unwrap();
 
-        let req = setup.rx_req.recv().await.unwrap();
-        let res = setup.rx_res.recv().await.unwrap();
+        let req = setup.rx_req.next().await.unwrap();
+        assert_eq!(
+            req.headers().get(header::HOST).unwrap(),
+            format!("127.0.0.1:{}", setup.server_port).as_bytes()
+        );
+        let res = setup.rx_res.next().await.unwrap();
 
-        assert_eq!(body_str(&res), "Hello, World!");
+        let body = res.into_body().concat().await;
+
+        assert_eq!(String::from_utf8(body).unwrap(), "Hello, World!");
     }
 }
 
@@ -224,7 +179,8 @@ async fn test_sse() {
         .await
         .unwrap();
 
-    let req = setup.rx_res.recv().await.unwrap();
+    let res = setup.rx_res.next().await.unwrap();
+    let body = res.into_body().concat().await;
 
-    dbg!(String::from_utf8(req).unwrap());
+    dbg!(String::from_utf8(body).unwrap());
 }
