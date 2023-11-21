@@ -115,7 +115,6 @@ impl<T: MiddleMan<K> + Send + Sync + 'static, K: Sync + Send + 'static> MitmProx
 
             let proxy = self.clone();
             tokio::spawn(async move {
-                let addr = uri.authority().unwrap().to_string();
                 let host = uri.host().unwrap();
 
                 let client = hyper::upgrade::on(req).await.unwrap();
