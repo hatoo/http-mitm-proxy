@@ -97,7 +97,10 @@ async fn setup(app: Router) -> Setup {
 
     tokio::spawn(server);
 
-    let proxy = http_mitm_proxy::MitmProxy::new(None, None);
+    let proxy = http_mitm_proxy::MitmProxy::new(
+        None,
+        tokio_native_tls::native_tls::TlsConnector::new().unwrap(),
+    );
     let proxy_port = get_port();
 
     let proxy_server = proxy.bind(("127.0.0.1", proxy_port)).await.unwrap();
@@ -139,13 +142,11 @@ async fn setup_tls(app: Router, without_cert: bool) -> Setup {
         } else {
             Some(Arc::new(root_cert()))
         },
-        Some(
-            tokio_native_tls::native_tls::TlsConnector::builder()
-                .danger_accept_invalid_certs(true)
-                .danger_accept_invalid_hostnames(true)
-                .build()
-                .unwrap(),
-        ),
+        tokio_native_tls::native_tls::TlsConnector::builder()
+            .danger_accept_invalid_certs(true)
+            .danger_accept_invalid_hostnames(true)
+            .build()
+            .unwrap(),
     );
     let proxy_port = get_port();
 
