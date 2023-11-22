@@ -117,11 +117,8 @@ impl MitmProxy {
                     let server = TcpStream::connect(uri.authority().unwrap().as_str())
                         .await
                         .unwrap();
-                    let native_tls_connector = proxy
-                        .tls_connector
-                        .as_ref()
-                        .map(|c| c.clone())
-                        .unwrap_or_else(|| {
+                    let native_tls_connector =
+                        proxy.tls_connector.as_ref().cloned().unwrap_or_else(|| {
                             tokio_native_tls::native_tls::TlsConnector::new().unwrap()
                         });
                     let connector = tokio_native_tls::TlsConnector::from(native_tls_connector);
@@ -356,6 +353,7 @@ fn dup_request(
     )
 }
 
+#[allow(clippy::type_complexity)]
 fn dup_response(
     res: Response<hyper::body::Incoming>,
 ) -> (

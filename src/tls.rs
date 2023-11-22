@@ -2,7 +2,7 @@ pub fn server_config(
     host: String,
     root_cert: &rcgen::Certificate,
 ) -> Result<rustls::ServerConfig, rustls::Error> {
-    let mut cert_params = rcgen::CertificateParams::new(vec![host.into()]);
+    let mut cert_params = rcgen::CertificateParams::new(vec![host]);
     cert_params
         .key_usages
         .push(rcgen::KeyUsagePurpose::DigitalSignature);
