@@ -363,3 +363,59 @@ async fn test_tls_simple() {
 
     assert_eq!(String::from_utf8(body).unwrap(), "Hello, World!");
 }
+
+#[tokio::test]
+async fn test_tls_keep_alive() {
+    let app = Router::new().route("/", get(|| async { "Hello, World!" }));
+
+    let mut setup = setup_tls(app).await;
+
+    // reqwest wii use single connection with keep-alive
+    for _ in 0..16 {
+        setup
+            .client
+            .get(format!("https://127.0.0.1:{}/", setup.server_port))
+            .send()
+            .await
+            .unwrap();
+
+        let req = setup.rx_req.next().await.unwrap();
+        assert_eq!(
+            req.headers().get(header::HOST).unwrap(),
+            format!("127.0.0.1:{}", setup.server_port).as_bytes()
+        );
+        let res = setup.rx_res.next().await.unwrap();
+
+        let body = res.into_body().concat().await;
+
+        assert_eq!(String::from_utf8(body).unwrap(), "Hello, World!");
+    }
+}
+
+#[tokio::test]
+async fn test_tls_sse() {
+    let app = Router::new().route(
+        "/sse",
+        get(|| async {
+            Sse::new(stream::iter(["1", "2", "3"].into_iter().map(|s| {
+                Ok::<Event, Infallible>(Event::default().event("message").data(s))
+            })))
+        }),
+    );
+
+    let mut setup = setup_tls(app).await;
+    setup
+        .client
+        .get(format!("https://127.0.0.1:{}/sse", setup.server_port))
+        .send()
+        .await
+        .unwrap();
+
+    let res = setup.rx_res.next().await.unwrap();
+    let body = res.into_body().concat().await;
+
+    assert_eq!(
+        body,
+        b"event:message\ndata:1\n\nevent:message\ndata:2\n\nevent:message\ndata:3\n\n"
+    );
+}
