@@ -1,10 +1,6 @@
-use async_trait::async_trait;
 use bytes::Bytes;
 use futures::{
-    channel::{
-        mpsc::{UnboundedReceiver, UnboundedSender},
-        oneshot::Canceled,
-    },
+    channel::mpsc::{UnboundedReceiver, UnboundedSender},
     Stream,
 };
 use http_body_util::{combinators::BoxBody, BodyExt, Empty, StreamBody};
@@ -15,7 +11,7 @@ use hyper::{
     service::service_fn,
     Method, Request, Response, StatusCode,
 };
-use std::{future::Future, sync::Arc};
+use std::sync::Arc;
 use tls::server_config;
 use tokio::net::{TcpListener, TcpStream, ToSocketAddrs};
 use tokio::{
@@ -103,7 +99,6 @@ impl MitmProxy {
         tx: UnboundedSender<Communication>,
     ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Error> {
         if req.method() == Method::CONNECT {
-            /*
             let uri = req.uri().clone();
 
             let proxy = self.clone();
@@ -112,7 +107,7 @@ impl MitmProxy {
 
                 let client = hyper::upgrade::on(req).await.unwrap();
 
-                if let Some(root_cert) = proxy.root_cert() {
+                if let Some(root_cert) = proxy.root_cert.as_ref() {
                     let server_config = server_config(authority.to_string(), root_cert).unwrap();
                     // TODO: Cache server_config
                     let server_config = Arc::new(server_config);
@@ -150,10 +145,10 @@ impl MitmProxy {
                         .title_case_headers(true)
                         .serve_connection(
                             TokioIo::new(client),
-                            service_fn(|req| {
-                                let proxy = proxy.clone();
+                            service_fn(move |req| {
                                 let authority = authority.clone();
                                 let sender = sender.clone();
+                                let tx = tx.clone();
 
                                 async move {
                                     let mut lock = sender.lock().await;
@@ -165,12 +160,17 @@ impl MitmProxy {
                                     );
                                     let res = lock.send_request(req).await.unwrap();
                                     let (res, res_upgrade, res_middleman) = dup_response(res);
-                                    let proxy2 = proxy.clone();
-                                    let key = tokio::spawn(async move {
-                                        proxy2.middle_man().request(req_middleman).await
+
+                                    let (res_tx, res_rx) = futures::channel::oneshot::channel();
+                                    let (upgrade_tx, upgrade_rx) =
+                                        futures::channel::oneshot::channel();
+                                    let _ = tx.unbounded_send(Communication {
+                                        request: req_middleman,
+                                        response: res_rx,
+                                        upgrade: upgrade_rx,
                                     });
+
                                     if res.status() == StatusCode::SWITCHING_PROTOCOLS {
-                                        let proxy = proxy.clone();
                                         tokio::task::spawn(async move {
                                             match (
                                                 hyper::upgrade::on(Request::from_parts(
@@ -187,11 +187,10 @@ impl MitmProxy {
                                                     )
                                                     .await;
 
-                                                    let key = key.await.unwrap();
-                                                    proxy
-                                                        .middle_man()
-                                                        .upgrade(key, rx_client, rx_server)
-                                                        .await;
+                                                    let _ = upgrade_tx.send(Upgrade {
+                                                        client_to_server: rx_client,
+                                                        server_to_client: rx_server,
+                                                    });
                                                 }
                                                 (Err(e), _) => eprintln!("upgrade error: {}", e),
                                                 _ => todo!(),
@@ -200,10 +199,7 @@ impl MitmProxy {
                                         return Ok::<_, hyper::Error>(res);
                                     }
                                     drop(lock);
-                                    proxy
-                                        .middle_man()
-                                        .response(key.await.unwrap(), res_middleman)
-                                        .await;
+                                    let _ = res_tx.send(res_middleman);
 
                                     Ok::<_, hyper::Error>(res)
                                 }
@@ -226,8 +222,6 @@ impl MitmProxy {
                     .map_err(|never| match never {})
                     .boxed(),
             ))
-            */
-            todo!()
         } else {
             let host = req.uri().host().unwrap();
             let port = req.uri().port_u16().unwrap_or(80);
