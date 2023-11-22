@@ -27,24 +27,6 @@ pub use hyper;
 mod tls;
 pub mod tokiort;
 
-#[async_trait]
-pub trait MiddleMan<K> {
-    // do not call hyper::upgrade::on() to req/res
-    async fn request(&self, req: Request<UnboundedReceiver<Vec<u8>>>) -> K;
-    async fn response(&self, key: K, res: Response<UnboundedReceiver<Vec<u8>>>) -> K;
-    async fn upgrade(
-        &self,
-        key: K,
-        client_to_server: UnboundedReceiver<Vec<u8>>,
-        server_to_client: UnboundedReceiver<Vec<u8>>,
-    );
-}
-
-struct Inner<T> {
-    pub middle_man: T,
-    pub root_cert: Option<rcgen::Certificate>,
-}
-
 #[derive(Clone)]
 pub struct MitmProxy {
     pub root_cert: Option<Arc<rcgen::Certificate>>,
