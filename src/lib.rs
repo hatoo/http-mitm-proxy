@@ -167,7 +167,12 @@ impl<T: MiddleMan<K> + Send + Sync + 'static, K: Sync + Send + 'static> MitmProx
                         .with_upgrades()
                         .await;
                 } else {
-                    todo!()
+                    let mut server = TcpStream::connect(uri.authority().unwrap().as_str())
+                        .await
+                        .unwrap();
+                    tokio::io::copy_bidirectional(&mut TokioIo::new(client), &mut server)
+                        .await
+                        .unwrap();
                 }
             });
 
