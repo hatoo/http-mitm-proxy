@@ -1,4 +1,7 @@
-use std::{convert::Infallible, sync::atomic::AtomicU16};
+use std::{
+    convert::Infallible,
+    sync::{atomic::AtomicU16, Arc},
+};
 
 use axum::{
     extract::ws::{Message, WebSocket, WebSocketUpgrade},
@@ -6,6 +9,7 @@ use axum::{
     routing::get,
     Router,
 };
+use axum_server::tls_rustls::RustlsConfig;
 use bytes::Bytes;
 use futures::{
     channel::mpsc::{unbounded, UnboundedReceiver, UnboundedSender},
@@ -14,7 +18,9 @@ use futures::{
 use http_body_util::{BodyExt, Empty};
 use http_mitm_proxy::{tokiort::TokioIo, MiddleMan};
 use hyper::{header, Request, Response, Uri};
+use rcgen::generate_simple_self_signed;
 use reqwest::Client;
+use rustls::ServerConfig;
 
 static PORT: AtomicU16 = AtomicU16::new(3666);
 
@@ -34,6 +40,40 @@ async fn bind_app(app: Router) -> (u16, impl std::future::Future<Output = ()>) {
             .await
             .unwrap()
     })
+}
+
+async fn bind_app_tls(app: Router) -> (u16, impl std::future::Future<Output = ()>) {
+    let port = get_port();
+
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
+        .await
+        .unwrap();
+
+    (port, async move {
+        axum_server::from_tcp_rustls(
+            listener.into_std().unwrap(),
+            RustlsConfig::from_config(tls_server_config(format!("127.0.0.1:{}", port))),
+        )
+        .serve(app.into_make_service())
+        .await
+        .unwrap()
+    })
+}
+
+fn tls_server_config(host: String) -> Arc<ServerConfig> {
+    let cert = generate_simple_self_signed(vec![host]).unwrap();
+    let private_key = cert.get_key_pair().serialize_der();
+
+    let server_config = ServerConfig::builder()
+        .with_safe_defaults()
+        .with_no_client_auth()
+        .with_single_cert(
+            vec![rustls::Certificate(cert.serialize_der().unwrap())],
+            rustls::PrivateKey(private_key),
+        )
+        .unwrap();
+
+    Arc::new(server_config)
 }
 
 struct ChannelMan {
@@ -66,6 +106,7 @@ impl MiddleMan<()> for ChannelMan {
 fn client(proxy_port: u16) -> reqwest::Client {
     reqwest::Client::builder()
         .proxy(reqwest::Proxy::http(format!("http://127.0.0.1:{}", proxy_port)).unwrap())
+        .danger_accept_invalid_certs(true)
         .build()
         .unwrap()
 }
@@ -89,7 +130,49 @@ async fn setup(app: Router) -> Setup {
     let proxy = http_mitm_proxy::MitmProxy::new(ChannelMan::new(req_tx, res_tx), None);
     let proxy_port = get_port();
 
-    tokio::spawn(proxy.bind(("127.0.0.1", proxy_port)).await.unwrap());
+    let proxy_server = proxy.bind(("127.0.0.1", proxy_port)).await.unwrap();
+    tokio::spawn(proxy_server);
+
+    let client = client(proxy_port);
+
+    Setup {
+        proxy_port,
+        server_port,
+        rx_req,
+        rx_res,
+        client,
+    }
+}
+
+fn root_cert() -> rcgen::Certificate {
+    let mut param = rcgen::CertificateParams::default();
+
+    param.distinguished_name = rcgen::DistinguishedName::new();
+    param.distinguished_name.push(
+        rcgen::DnType::CommonName,
+        rcgen::DnValue::Utf8String("<http-mitm-proxy TEST CA>".to_string()),
+    );
+    param.key_usages = vec![
+        rcgen::KeyUsagePurpose::KeyCertSign,
+        rcgen::KeyUsagePurpose::CrlSign,
+    ];
+    param.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+    rcgen::Certificate::from_params(param).unwrap()
+}
+
+async fn setup_tls(app: Router) -> Setup {
+    let (server_port, server) = bind_app_tls(app).await;
+
+    tokio::spawn(server);
+
+    let (req_tx, rx_req) = unbounded();
+    let (res_tx, rx_res) = unbounded();
+
+    let proxy = http_mitm_proxy::MitmProxy::new(ChannelMan::new(req_tx, res_tx), Some(root_cert()));
+    let proxy_port = get_port();
+
+    let proxy_server = proxy.bind(("127.0.0.1", proxy_port)).await.unwrap();
+    tokio::spawn(proxy_server);
 
     let client = client(proxy_port);
 
@@ -234,4 +317,34 @@ async fn handle_socket(mut socket: WebSocket) {
         .send(Message::Text("Hello, World!".to_string()))
         .await
         .unwrap();
+}
+
+#[tokio::test]
+async fn test_tls_simple() {
+    let app = Router::new().route("/", get(|| async { "Hello, World!" }));
+
+    let mut setup = setup_tls(app).await;
+
+    let response = setup
+        .client
+        .get(format!("https://127.0.0.1:{}/", setup.server_port))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.bytes().await.unwrap().as_ref(), b"Hello, World!");
+
+    /*
+    let req = setup.rx_req.next().await.unwrap();
+    assert_eq!(
+        req.headers().get(header::HOST).unwrap(),
+        format!("127.0.0.1:{}", setup.server_port).as_bytes()
+    );
+    let res = setup.rx_res.next().await.unwrap();
+
+    let body = res.into_body().concat().await;
+
+    assert_eq!(String::from_utf8(body).unwrap(), "Hello, World!");
+    */
 }
