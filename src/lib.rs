@@ -22,6 +22,7 @@ use tokiort::TokioIo;
 
 pub use futures;
 pub use hyper;
+pub use tokio_native_tls;
 
 mod tls;
 pub mod tokiort;
@@ -29,13 +30,13 @@ pub mod tokiort;
 #[derive(Clone)]
 pub struct MitmProxy {
     pub root_cert: Option<Arc<rcgen::Certificate>>,
-    pub tls_connector: Option<tokio_native_tls::native_tls::TlsConnector>,
+    pub tls_connector: tokio_native_tls::native_tls::TlsConnector,
 }
 
 impl MitmProxy {
     pub fn new(
         root_cert: Option<Arc<rcgen::Certificate>>,
-        tls_connector: Option<tokio_native_tls::native_tls::TlsConnector>,
+        tls_connector: tokio_native_tls::native_tls::TlsConnector,
     ) -> Self {
         Self {
             root_cert,
@@ -117,10 +118,7 @@ impl MitmProxy {
                     let server = TcpStream::connect(uri.authority().unwrap().as_str())
                         .await
                         .unwrap();
-                    let native_tls_connector =
-                        proxy.tls_connector.as_ref().cloned().unwrap_or_else(|| {
-                            tokio_native_tls::native_tls::TlsConnector::new().unwrap()
-                        });
+                    let native_tls_connector = proxy.tls_connector.clone();
                     let connector = tokio_native_tls::TlsConnector::from(native_tls_connector);
                     let server = connector
                         .connect(uri.host().unwrap(), server)
