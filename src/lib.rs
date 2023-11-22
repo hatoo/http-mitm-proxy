@@ -3,8 +3,8 @@ use bytes::Bytes;
 use futures::{channel::mpsc::UnboundedReceiver, Stream};
 use http_body_util::{combinators::BoxBody, BodyExt, Empty, StreamBody};
 use hyper::{
-    body::{Body, Frame, Incoming},
-    client::{self, conn::http1::SendRequest},
+    body::{Frame, Incoming},
+    client::{self},
     server::{self},
     service::service_fn,
     Method, Request, Response, StatusCode,
@@ -44,6 +44,7 @@ struct Inner<T> {
 
 pub struct MitmProxy<T, K> {
     inner: Arc<Inner<T>>,
+    pub tls_connector: Option<tokio_native_tls::native_tls::TlsConnector>,
     _phantom: std::marker::PhantomData<K>,
 }
 
@@ -51,6 +52,7 @@ impl<T, K> Clone for MitmProxy<T, K> {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
+            tls_connector: self.tls_connector.clone(),
             _phantom: std::marker::PhantomData,
         }
     }
@@ -63,6 +65,7 @@ impl<T, K> MitmProxy<T, K> {
                 middle_man,
                 root_cert,
             }),
+            tls_connector: None,
             _phantom: std::marker::PhantomData,
         }
     }
@@ -130,8 +133,13 @@ impl<T: MiddleMan<K> + Send + Sync + 'static, K: Sync + Send + 'static> MitmProx
                     let server = TcpStream::connect(uri.authority().unwrap().as_str())
                         .await
                         .unwrap();
-                    let native_tls_connector =
-                        tokio_native_tls::native_tls::TlsConnector::new().unwrap();
+                    let native_tls_connector = proxy
+                        .tls_connector
+                        .as_ref()
+                        .map(|c| c.clone())
+                        .unwrap_or_else(|| {
+                            tokio_native_tls::native_tls::TlsConnector::new().unwrap()
+                        });
                     let connector = tokio_native_tls::TlsConnector::from(native_tls_connector);
                     let server = connector
                         .connect(uri.host().unwrap(), server)
@@ -160,7 +168,16 @@ impl<T: MiddleMan<K> + Send + Sync + 'static, K: Sync + Send + 'static> MitmProx
 
                                 async move {
                                     let mut lock = sender.lock().await;
-                                    proxy.mitm_tunnel(req, &host, &mut lock).await
+
+                                    let (req, req_middleman, _req_parts) = dup_request(req);
+                                    let res = lock.send_request(req).await.unwrap();
+                                    drop(lock);
+                                    dbg!(&req_middleman);
+                                    let key = proxy.middle_man().request(req_middleman).await;
+                                    let (res, _res_upgrade, res_middleman) = dup_reaponse(res);
+                                    proxy.middle_man().response(key, res_middleman).await;
+
+                                    Ok::<_, hyper::Error>(res)
                                 }
                             }),
                         )
@@ -271,15 +288,6 @@ impl<T: MiddleMan<K> + Send + Sync + 'static, K: Sync + Send + 'static> MitmProx
             }
             Ok(res)
         }
-    }
-
-    async fn mitm_tunnel(
-        &self,
-        req: Request<hyper::body::Incoming>,
-        host: &str,
-        sender: &mut SendRequest<Incoming>,
-    ) -> Result<Response<impl Body<Data = Bytes, Error = hyper::Error>>, hyper::Error> {
-        sender.send_request(req).await
     }
 }
 

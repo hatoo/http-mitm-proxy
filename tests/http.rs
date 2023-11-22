@@ -106,6 +106,7 @@ impl MiddleMan<()> for ChannelMan {
 fn client(proxy_port: u16) -> reqwest::Client {
     reqwest::Client::builder()
         .proxy(reqwest::Proxy::http(format!("http://127.0.0.1:{}", proxy_port)).unwrap())
+        .proxy(reqwest::Proxy::https(format!("http://127.0.0.1:{}", proxy_port)).unwrap())
         .danger_accept_invalid_certs(true)
         .build()
         .unwrap()
@@ -168,7 +169,15 @@ async fn setup_tls(app: Router) -> Setup {
     let (req_tx, rx_req) = unbounded();
     let (res_tx, rx_res) = unbounded();
 
-    let proxy = http_mitm_proxy::MitmProxy::new(ChannelMan::new(req_tx, res_tx), Some(root_cert()));
+    let mut proxy =
+        http_mitm_proxy::MitmProxy::new(ChannelMan::new(req_tx, res_tx), Some(root_cert()));
+    proxy.tls_connector = Some(
+        tokio_native_tls::native_tls::TlsConnector::builder()
+            .danger_accept_invalid_certs(true)
+            .danger_accept_invalid_hostnames(true)
+            .build()
+            .unwrap(),
+    );
     let proxy_port = get_port();
 
     let proxy_server = proxy.bind(("127.0.0.1", proxy_port)).await.unwrap();
@@ -335,7 +344,6 @@ async fn test_tls_simple() {
     assert_eq!(response.status(), 200);
     assert_eq!(response.bytes().await.unwrap().as_ref(), b"Hello, World!");
 
-    /*
     let req = setup.rx_req.next().await.unwrap();
     assert_eq!(
         req.headers().get(header::HOST).unwrap(),
@@ -346,5 +354,4 @@ async fn test_tls_simple() {
     let body = res.into_body().concat().await;
 
     assert_eq!(String::from_utf8(body).unwrap(), "Hello, World!");
-    */
 }
