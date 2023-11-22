@@ -175,7 +175,7 @@ impl<T: MiddleMan<K> + Send + Sync + 'static, K: Sync + Send + 'static> MitmProx
                                         hyper::http::uri::Authority::try_from(authority).unwrap(),
                                     );
                                     let res = lock.send_request(req).await.unwrap();
-                                    let (res, res_upgrade, res_middleman) = dup_reaponse(res);
+                                    let (res, res_upgrade, res_middleman) = dup_response(res);
                                     let proxy2 = proxy.clone();
                                     let key = tokio::spawn(async move {
                                         proxy2.middle_man().request(req_middleman).await
@@ -260,7 +260,7 @@ impl<T: MiddleMan<K> + Send + Sync + 'static, K: Sync + Send + 'static> MitmProx
 
             let res = res.await.unwrap()?;
             let status = res.status();
-            let (res, res_upgrade, res_middleman) = dup_reaponse(res);
+            let (res, res_upgrade, res_middleman) = dup_response(res);
 
             let proxy = self.clone();
             let key =
@@ -366,7 +366,7 @@ fn dup_request(
     )
 }
 
-fn dup_reaponse(
+fn dup_response(
     res: Response<hyper::body::Incoming>,
 ) -> (
     Response<BoxBody<Bytes, hyper::Error>>,
