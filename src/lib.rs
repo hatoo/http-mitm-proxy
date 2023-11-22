@@ -1,6 +1,9 @@
 use async_trait::async_trait;
 use bytes::Bytes;
-use futures::{channel::mpsc::UnboundedReceiver, Stream};
+use futures::{
+    channel::mpsc::{UnboundedReceiver, UnboundedSender},
+    Stream,
+};
 use http_body_util::{combinators::BoxBody, BodyExt, Empty, StreamBody};
 use hyper::{
     body::{Frame, Incoming},
@@ -42,70 +45,62 @@ struct Inner<T> {
     pub root_cert: Option<rcgen::Certificate>,
 }
 
-pub struct MitmProxy<T, K> {
-    inner: Arc<Inner<T>>,
+#[derive(Clone)]
+pub struct MitmProxy {
+    pub root_cert: Option<Arc<rcgen::Certificate>>,
     pub tls_connector: Option<tokio_native_tls::native_tls::TlsConnector>,
-    _phantom: std::marker::PhantomData<K>,
 }
 
-impl<T, K> Clone for MitmProxy<T, K> {
-    fn clone(&self) -> Self {
+impl MitmProxy {
+    pub fn new(
+        root_cert: Option<Arc<rcgen::Certificate>>,
+        tls_connector: Option<tokio_native_tls::native_tls::TlsConnector>,
+    ) -> Self {
         Self {
-            inner: self.inner.clone(),
-            tls_connector: self.tls_connector.clone(),
-            _phantom: std::marker::PhantomData,
+            root_cert,
+            tls_connector,
         }
     }
 }
 
-impl<T, K> MitmProxy<T, K> {
-    pub fn new(middle_man: T, root_cert: Option<rcgen::Certificate>) -> Self {
-        Self {
-            inner: Arc::new(Inner {
-                middle_man,
-                root_cert,
-            }),
-            tls_connector: None,
-            _phantom: std::marker::PhantomData,
-        }
-    }
-
-    pub fn middle_man(&self) -> &T {
-        &self.inner.middle_man
-    }
-
-    pub fn root_cert(&self) -> Option<&rcgen::Certificate> {
-        self.inner.root_cert.as_ref()
-    }
+pub struct Communication {
+    pub request: Request<UnboundedReceiver<Vec<u8>>>,
 }
 
-impl<T: MiddleMan<K> + Send + Sync + 'static, K: Sync + Send + 'static> MitmProxy<T, K> {
+impl MitmProxy {
     pub async fn bind<A: ToSocketAddrs>(
         &self,
         addr: A,
-    ) -> Result<impl Future<Output = ()>, std::io::Error> {
+    ) -> Result<impl Stream<Item = Communication>, std::io::Error> {
         let listener = TcpListener::bind(addr).await?;
+        let (tx, rx) = futures::channel::mpsc::unbounded();
 
         let proxy = self.clone();
 
-        Ok(async move {
+        tokio::spawn(async move {
             loop {
                 let stream = listener.accept().await;
                 let Ok((stream, _)) = stream else {
                     continue;
                 };
+                let tx = tx.clone();
 
                 let proxy = proxy.clone();
-                tokio::spawn(async move { proxy.handle(stream).await });
+                tokio::spawn(async move { proxy.handle(stream, tx).await });
             }
-        })
+        });
+
+        Ok(rx)
     }
 
-    async fn handle(&self, stream: tokio::net::TcpStream) {
+    async fn handle(&self, stream: tokio::net::TcpStream, tx: UnboundedSender<Communication>) {
         let _ = server::conn::http1::Builder::new()
             .preserve_header_case(true)
             .title_case_headers(true)
-            .serve_connection(TokioIo::new(stream), service_fn(|req| self.proxy(req)))
+            .serve_connection(
+                TokioIo::new(stream),
+                service_fn(|req| self.proxy(req, tx.clone())),
+            )
             .with_upgrades()
             .await;
     }
@@ -113,8 +108,10 @@ impl<T: MiddleMan<K> + Send + Sync + 'static, K: Sync + Send + 'static> MitmProx
     async fn proxy(
         &self,
         req: Request<hyper::body::Incoming>,
+        tx: UnboundedSender<Communication>,
     ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Error> {
         if req.method() == Method::CONNECT {
+            /*
             let uri = req.uri().clone();
 
             let proxy = self.clone();
@@ -237,6 +234,8 @@ impl<T: MiddleMan<K> + Send + Sync + 'static, K: Sync + Send + 'static> MitmProx
                     .map_err(|never| match never {})
                     .boxed(),
             ))
+            */
+            todo!()
         } else {
             let host = req.uri().host().unwrap();
             let port = req.uri().port_u16().unwrap_or(80);
@@ -256,16 +255,22 @@ impl<T: MiddleMan<K> + Send + Sync + 'static, K: Sync + Send + 'static> MitmProx
             let res = tokio::spawn(sender.send_request(req));
 
             // Used tokio::spawn above to middle_man can consume rx in request()
-            let key = self.middle_man().request(req_middleman).await;
+            let _ = tx.unbounded_send(Communication {
+                request: req_middleman,
+            });
+            // let key = self.middle_man().request(req_middleman).await;
 
             let res = res.await.unwrap()?;
             let status = res.status();
             let (res, res_upgrade, res_middleman) = dup_response(res);
 
             let proxy = self.clone();
+            /*
             let key =
                 tokio::spawn(async move { proxy.middle_man().response(key, res_middleman).await });
+                */
 
+            /*
             // https://developer.mozilla.org/ja/docs/Web/HTTP/Status/101
             if status == StatusCode::SWITCHING_PROTOCOLS {
                 let proxy = self.clone();
@@ -286,6 +291,7 @@ impl<T: MiddleMan<K> + Send + Sync + 'static, K: Sync + Send + 'static> MitmProx
                     }
                 });
             }
+            */
             Ok(res)
         }
     }
