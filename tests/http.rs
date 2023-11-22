@@ -212,6 +212,10 @@ async fn test_simple() {
 
     let req = setup.rx_req.next().await.unwrap();
     assert_eq!(
+        req.uri().to_string(),
+        format!("http://127.0.0.1:{}/", setup.server_port)
+    );
+    assert_eq!(
         req.headers().get(header::HOST).unwrap(),
         format!("127.0.0.1:{}", setup.server_port).as_bytes()
     );
@@ -345,6 +349,10 @@ async fn test_tls_simple() {
     assert_eq!(response.bytes().await.unwrap().as_ref(), b"Hello, World!");
 
     let req = setup.rx_req.next().await.unwrap();
+    assert_eq!(
+        req.uri().to_string(),
+        format!("https://127.0.0.1:{}/", setup.server_port)
+    );
     assert_eq!(
         req.headers().get(header::HOST).unwrap(),
         format!("127.0.0.1:{}", setup.server_port).as_bytes()

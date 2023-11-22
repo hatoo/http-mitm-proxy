@@ -119,12 +119,12 @@ impl<T: MiddleMan<K> + Send + Sync + 'static, K: Sync + Send + 'static> MitmProx
 
             let proxy = self.clone();
             tokio::spawn(async move {
-                let host = uri.host().unwrap();
+                let authority = uri.authority().unwrap().as_str();
 
                 let client = hyper::upgrade::on(req).await.unwrap();
 
                 if let Some(root_cert) = proxy.root_cert() {
-                    let server_config = server_config(host.to_string(), root_cert).unwrap();
+                    let server_config = server_config(authority.to_string(), root_cert).unwrap();
                     // TODO: Cache server_config
                     let server_config = Arc::new(server_config);
                     let tls_acceptor = tokio_rustls::TlsAcceptor::from(server_config);
@@ -154,7 +154,7 @@ impl<T: MiddleMan<K> + Send + Sync + 'static, K: Sync + Send + 'static> MitmProx
 
                     tokio::spawn(conn.with_upgrades());
 
-                    let host = host.to_string();
+                    let authority = authority.to_string();
                     let sender = Arc::new(Mutex::new(sender));
                     let _ = server::conn::http1::Builder::new()
                         .preserve_header_case(true)
@@ -163,16 +163,23 @@ impl<T: MiddleMan<K> + Send + Sync + 'static, K: Sync + Send + 'static> MitmProx
                             TokioIo::new(client),
                             service_fn(|req| {
                                 let proxy = proxy.clone();
-                                let host = host.clone();
+                                let authority = authority.clone();
                                 let sender = sender.clone();
 
                                 async move {
                                     let mut lock = sender.lock().await;
 
-                                    let (req, req_middleman, _req_parts) = dup_request(req);
+                                    let (req, mut req_middleman, _req_parts) = dup_request(req);
                                     let res = lock.send_request(req).await.unwrap();
                                     drop(lock);
-                                    dbg!(&req_middleman);
+                                    let req_uri = req_middleman.uri().clone();
+                                    let mut parts = req_uri.into_parts();
+                                    parts.scheme = Some(hyper::http::uri::Scheme::HTTPS);
+                                    parts.authority = Some(
+                                        hyper::http::uri::Authority::try_from(authority).unwrap(),
+                                    );
+                                    *req_middleman.uri_mut() =
+                                        hyper::http::uri::Uri::from_parts(parts).unwrap();
                                     let key = proxy.middle_man().request(req_middleman).await;
                                     let (res, _res_upgrade, res_middleman) = dup_reaponse(res);
                                     proxy.middle_man().response(key, res_middleman).await;
