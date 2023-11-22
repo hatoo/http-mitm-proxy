@@ -12,12 +12,12 @@ use axum::{
 use axum_server::tls_rustls::RustlsConfig;
 use bytes::Bytes;
 use futures::{
-    channel::mpsc::{unbounded, UnboundedReceiver, UnboundedSender},
-    stream, StreamExt,
+    stream::{self, BoxStream},
+    StreamExt,
 };
 use http_body_util::{BodyExt, Empty};
-use http_mitm_proxy::{tokiort::TokioIo, MiddleMan};
-use hyper::{header, Request, Response, Uri};
+use http_mitm_proxy::{tokiort::TokioIo, Communication};
+use hyper::{header, Request, Uri};
 use rcgen::generate_simple_self_signed;
 use reqwest::Client;
 use rustls::ServerConfig;
@@ -76,33 +76,6 @@ fn tls_server_config(host: String) -> Arc<ServerConfig> {
     Arc::new(server_config)
 }
 
-struct ChannelMan {
-    req_tx: UnboundedSender<Request<UnboundedReceiver<Vec<u8>>>>,
-    res_tx: UnboundedSender<Response<UnboundedReceiver<Vec<u8>>>>,
-}
-
-impl ChannelMan {
-    fn new(
-        req_tx: UnboundedSender<Request<UnboundedReceiver<Vec<u8>>>>,
-        res_tx: UnboundedSender<Response<UnboundedReceiver<Vec<u8>>>>,
-    ) -> Self {
-        Self { req_tx, res_tx }
-    }
-}
-
-#[async_trait::async_trait]
-impl MiddleMan<()> for ChannelMan {
-    async fn request(&self, req: Request<UnboundedReceiver<Vec<u8>>>) {
-        self.req_tx.unbounded_send(req).unwrap();
-    }
-
-    async fn response(&self, _: (), res: Response<UnboundedReceiver<Vec<u8>>>) {
-        self.res_tx.unbounded_send(res).unwrap();
-    }
-
-    async fn upgrade(&self, _: (), _: UnboundedReceiver<Vec<u8>>, _: UnboundedReceiver<Vec<u8>>) {}
-}
-
 fn client(proxy_port: u16) -> reqwest::Client {
     reqwest::Client::builder()
         .proxy(reqwest::Proxy::http(format!("http://127.0.0.1:{}", proxy_port)).unwrap())
@@ -115,8 +88,7 @@ fn client(proxy_port: u16) -> reqwest::Client {
 struct Setup {
     proxy_port: u16,
     server_port: u16,
-    rx_req: UnboundedReceiver<Request<UnboundedReceiver<Vec<u8>>>>,
-    rx_res: UnboundedReceiver<Response<UnboundedReceiver<Vec<u8>>>>,
+    proxy: BoxStream<'static, Communication>,
     client: Client,
 }
 
@@ -125,22 +97,17 @@ async fn setup(app: Router) -> Setup {
 
     tokio::spawn(server);
 
-    let (req_tx, rx_req) = unbounded();
-    let (res_tx, rx_res) = unbounded();
-
-    let proxy = http_mitm_proxy::MitmProxy::new(ChannelMan::new(req_tx, res_tx), None);
+    let proxy = http_mitm_proxy::MitmProxy::new(None, None);
     let proxy_port = get_port();
 
     let proxy_server = proxy.bind(("127.0.0.1", proxy_port)).await.unwrap();
-    tokio::spawn(proxy_server);
 
     let client = client(proxy_port);
 
     Setup {
         proxy_port,
         server_port,
-        rx_req,
-        rx_res,
+        proxy: proxy_server.boxed(),
         client,
     }
 }
@@ -166,36 +133,30 @@ async fn setup_tls(app: Router, without_cert: bool) -> Setup {
 
     tokio::spawn(server);
 
-    let (req_tx, rx_req) = unbounded();
-    let (res_tx, rx_res) = unbounded();
-
-    let mut proxy = http_mitm_proxy::MitmProxy::new(
-        ChannelMan::new(req_tx, res_tx),
+    let proxy = http_mitm_proxy::MitmProxy::new(
         if without_cert {
             None
         } else {
-            Some(root_cert())
+            Some(Arc::new(root_cert()))
         },
-    );
-    proxy.tls_connector = Some(
-        tokio_native_tls::native_tls::TlsConnector::builder()
-            .danger_accept_invalid_certs(true)
-            .danger_accept_invalid_hostnames(true)
-            .build()
-            .unwrap(),
+        Some(
+            tokio_native_tls::native_tls::TlsConnector::builder()
+                .danger_accept_invalid_certs(true)
+                .danger_accept_invalid_hostnames(true)
+                .build()
+                .unwrap(),
+        ),
     );
     let proxy_port = get_port();
 
     let proxy_server = proxy.bind(("127.0.0.1", proxy_port)).await.unwrap();
-    tokio::spawn(proxy_server);
 
     let client = client(proxy_port);
 
     Setup {
         proxy_port,
         server_port,
-        rx_req,
-        rx_res,
+        proxy: proxy_server.boxed(),
         client,
     }
 }
@@ -216,19 +177,24 @@ async fn test_simple() {
     assert_eq!(response.status(), 200);
     assert_eq!(response.bytes().await.unwrap().as_ref(), b"Hello, World!");
 
-    let req = setup.rx_req.next().await.unwrap();
+    let communication = setup.proxy.next().await.unwrap();
+
     assert_eq!(
-        req.uri().to_string(),
+        communication.request.uri().to_string(),
         format!("http://127.0.0.1:{}/", setup.server_port)
     );
     assert_eq!(
-        req.headers().get(header::HOST).unwrap(),
+        communication.request.headers().get(header::HOST).unwrap(),
         format!("127.0.0.1:{}", setup.server_port).as_bytes()
     );
-    let res = setup.rx_res.next().await.unwrap();
 
-    let body = res.into_body().concat().await;
-
+    let body = communication
+        .response
+        .await
+        .unwrap()
+        .body_mut()
+        .concat()
+        .await;
     assert_eq!(String::from_utf8(body).unwrap(), "Hello, World!");
 }
 
@@ -247,15 +213,24 @@ async fn test_keep_alive() {
             .await
             .unwrap();
 
-        let req = setup.rx_req.next().await.unwrap();
+        let communication = setup.proxy.next().await.unwrap();
+
         assert_eq!(
-            req.headers().get(header::HOST).unwrap(),
+            communication.request.uri().to_string(),
+            format!("http://127.0.0.1:{}/", setup.server_port)
+        );
+        assert_eq!(
+            communication.request.headers().get(header::HOST).unwrap(),
             format!("127.0.0.1:{}", setup.server_port).as_bytes()
         );
-        let res = setup.rx_res.next().await.unwrap();
 
-        let body = res.into_body().concat().await;
-
+        let body = communication
+            .response
+            .await
+            .unwrap()
+            .body_mut()
+            .concat()
+            .await;
         assert_eq!(String::from_utf8(body).unwrap(), "Hello, World!");
     }
 }
@@ -279,8 +254,14 @@ async fn test_sse() {
         .await
         .unwrap();
 
-    let res = setup.rx_res.next().await.unwrap();
-    let body = res.into_body().concat().await;
+    let communication = setup.proxy.next().await.unwrap();
+    let body = communication
+        .response
+        .await
+        .unwrap()
+        .body_mut()
+        .concat()
+        .await;
 
     assert_eq!(
         body,
@@ -320,7 +301,7 @@ async fn test_upgrade() {
 }
 
 async fn ws_handler(ws: WebSocketUpgrade) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_socket(socket))
+    ws.on_upgrade(handle_socket)
 }
 
 async fn handle_socket(mut socket: WebSocket) {
@@ -354,19 +335,24 @@ async fn test_tls_simple() {
     assert_eq!(response.status(), 200);
     assert_eq!(response.bytes().await.unwrap().as_ref(), b"Hello, World!");
 
-    let req = setup.rx_req.next().await.unwrap();
+    let communication = setup.proxy.next().await.unwrap();
+
     assert_eq!(
-        req.uri().to_string(),
+        communication.request.uri().to_string(),
         format!("https://127.0.0.1:{}/", setup.server_port)
     );
     assert_eq!(
-        req.headers().get(header::HOST).unwrap(),
+        communication.request.headers().get(header::HOST).unwrap(),
         format!("127.0.0.1:{}", setup.server_port).as_bytes()
     );
-    let res = setup.rx_res.next().await.unwrap();
 
-    let body = res.into_body().concat().await;
-
+    let body = communication
+        .response
+        .await
+        .unwrap()
+        .body_mut()
+        .concat()
+        .await;
     assert_eq!(String::from_utf8(body).unwrap(), "Hello, World!");
 }
 
@@ -402,15 +388,24 @@ async fn test_tls_keep_alive() {
             .await
             .unwrap();
 
-        let req = setup.rx_req.next().await.unwrap();
+        let communication = setup.proxy.next().await.unwrap();
+
         assert_eq!(
-            req.headers().get(header::HOST).unwrap(),
+            communication.request.uri().to_string(),
+            format!("https://127.0.0.1:{}/", setup.server_port)
+        );
+        assert_eq!(
+            communication.request.headers().get(header::HOST).unwrap(),
             format!("127.0.0.1:{}", setup.server_port).as_bytes()
         );
-        let res = setup.rx_res.next().await.unwrap();
 
-        let body = res.into_body().concat().await;
-
+        let body = communication
+            .response
+            .await
+            .unwrap()
+            .body_mut()
+            .concat()
+            .await;
         assert_eq!(String::from_utf8(body).unwrap(), "Hello, World!");
     }
 }
@@ -434,8 +429,14 @@ async fn test_tls_sse() {
         .await
         .unwrap();
 
-    let res = setup.rx_res.next().await.unwrap();
-    let body = res.into_body().concat().await;
+    let communication = setup.proxy.next().await.unwrap();
+    let body = communication
+        .response
+        .await
+        .unwrap()
+        .body_mut()
+        .concat()
+        .await;
 
     assert_eq!(
         body,
