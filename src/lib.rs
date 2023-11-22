@@ -190,44 +190,29 @@ impl<T: MiddleMan<K> + Send + Sync + 'static, K: Sync + Send + 'static> MitmProx
 
             tokio::spawn(conn.with_upgrades());
 
-            let (req_parts, body) = req.into_parts();
-            let (body, rx) = dup_body(body);
+            let (req, req_middleman, req_parts) = dup_request(req);
 
-            let res = tokio::spawn(sender.send_request(Request::from_parts(
-                req_parts.clone(),
-                StreamBody::new(body),
-            )));
+            let res = tokio::spawn(sender.send_request(req));
 
             // Used tokio::spawn above to middle_man can consume rx in request()
-            let key = self
-                .middle_man()
-                .request(Request::from_parts(req_parts.clone(), rx))
-                .await;
+            let key = self.middle_man().request(req_middleman).await;
 
             let res = res.await.unwrap()?;
             let status = res.status();
-            let (parts, body) = res.into_parts();
-            let (body, rx) = dup_body(body);
+            let (res, res_upgrade, res_middleman) = dup_reaponse(res);
 
             let proxy = self.clone();
-            let parts2 = parts.clone();
-            let key = tokio::spawn(async move {
-                proxy
-                    .middle_man()
-                    .response(key, Response::from_parts(parts2, rx))
-                    .await
-            });
+            let key =
+                tokio::spawn(async move { proxy.middle_man().response(key, res_middleman).await });
 
             // https://developer.mozilla.org/ja/docs/Web/HTTP/Status/101
             if status == StatusCode::SWITCHING_PROTOCOLS {
-                let res_parts = parts.clone();
                 let proxy = self.clone();
                 tokio::task::spawn(async move {
                     match (
                         hyper::upgrade::on(Request::from_parts(req_parts, Empty::<Bytes>::new()))
                             .await,
-                        hyper::upgrade::on(Response::from_parts(res_parts, Empty::<Bytes>::new()))
-                            .await,
+                        hyper::upgrade::on(res_upgrade).await,
                     ) {
                         (Ok(client), Ok(server)) => {
                             let (tx_client, rx_client) = futures::channel::mpsc::unbounded();
@@ -279,7 +264,7 @@ impl<T: MiddleMan<K> + Send + Sync + 'static, K: Sync + Send + 'static> MitmProx
                     }
                 });
             }
-            Ok(Response::from_parts(parts, StreamBody::new(body).boxed()))
+            Ok(res)
         }
     }
 
@@ -291,6 +276,40 @@ impl<T: MiddleMan<K> + Send + Sync + 'static, K: Sync + Send + 'static> MitmProx
     ) -> Result<Response<impl Body<Data = Bytes, Error = hyper::Error>>, hyper::Error> {
         sender.send_request(req).await
     }
+}
+
+fn dup_request(
+    req: Request<hyper::body::Incoming>,
+) -> (
+    Request<StreamBody<impl Stream<Item = Result<Frame<Bytes>, hyper::Error>>>>,
+    Request<UnboundedReceiver<Vec<u8>>>,
+    hyper::http::request::Parts,
+) {
+    let (parts, body) = req.into_parts();
+    let (body, rx) = dup_body(body);
+
+    (
+        Request::from_parts(parts.clone(), StreamBody::new(body)),
+        Request::from_parts(parts.clone(), rx),
+        parts,
+    )
+}
+
+fn dup_reaponse(
+    res: Response<hyper::body::Incoming>,
+) -> (
+    Response<BoxBody<Bytes, hyper::Error>>,
+    Response<Empty<Bytes>>,
+    Response<UnboundedReceiver<Vec<u8>>>,
+) {
+    let (parts, body) = res.into_parts();
+    let (body, rx) = dup_body(body);
+
+    (
+        Response::from_parts(parts.clone(), StreamBody::new(body).boxed()),
+        Response::from_parts(parts.clone(), Empty::new()),
+        Response::from_parts(parts.clone(), rx),
+    )
 }
 
 fn dup_body(
