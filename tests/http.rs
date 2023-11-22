@@ -192,6 +192,10 @@ async fn test_simple() {
         communication.request.uri().to_string(),
         format!("http://127.0.0.1:{}/", setup.server_port)
     );
+    assert_eq!(
+        communication.request.headers().get(header::HOST).unwrap(),
+        format!("127.0.0.1:{}", setup.server_port).as_bytes()
+    );
 
     let body = communication
         .response
@@ -201,25 +205,8 @@ async fn test_simple() {
         .concat()
         .await;
     assert_eq!(String::from_utf8(body).unwrap(), "Hello, World!");
-    /*
-    let req = setup.rx_req.next().await.unwrap();
-    assert_eq!(
-        req.uri().to_string(),
-        format!("http://127.0.0.1:{}/", setup.server_port)
-    );
-    assert_eq!(
-        req.headers().get(header::HOST).unwrap(),
-        format!("127.0.0.1:{}", setup.server_port).as_bytes()
-    );
-    let res = setup.rx_res.next().await.unwrap();
-
-    let body = res.into_body().concat().await;
-
-    assert_eq!(String::from_utf8(body).unwrap(), "Hello, World!");
-    */
 }
 
-/*
 #[tokio::test]
 async fn test_keep_alive() {
     let app = Router::new().route("/", get(|| async { "Hello, World!" }));
@@ -235,15 +222,24 @@ async fn test_keep_alive() {
             .await
             .unwrap();
 
-        let req = setup.rx_req.next().await.unwrap();
+        let communication = setup.proxy.next().await.unwrap();
+
         assert_eq!(
-            req.headers().get(header::HOST).unwrap(),
+            communication.request.uri().to_string(),
+            format!("http://127.0.0.1:{}/", setup.server_port)
+        );
+        assert_eq!(
+            communication.request.headers().get(header::HOST).unwrap(),
             format!("127.0.0.1:{}", setup.server_port).as_bytes()
         );
-        let res = setup.rx_res.next().await.unwrap();
 
-        let body = res.into_body().concat().await;
-
+        let body = communication
+            .response
+            .await
+            .unwrap()
+            .body_mut()
+            .concat()
+            .await;
         assert_eq!(String::from_utf8(body).unwrap(), "Hello, World!");
     }
 }
@@ -267,8 +263,14 @@ async fn test_sse() {
         .await
         .unwrap();
 
-    let res = setup.rx_res.next().await.unwrap();
-    let body = res.into_body().concat().await;
+    let communication = setup.proxy.next().await.unwrap();
+    let body = communication
+        .response
+        .await
+        .unwrap()
+        .body_mut()
+        .concat()
+        .await;
 
     assert_eq!(
         body,
@@ -326,6 +328,7 @@ async fn handle_socket(mut socket: WebSocket) {
         .unwrap();
 }
 
+/*
 #[tokio::test]
 async fn test_tls_simple() {
     let app = Router::new().route("/", get(|| async { "Hello, World!" }));
