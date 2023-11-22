@@ -193,6 +193,14 @@ async fn test_simple() {
         format!("http://127.0.0.1:{}/", setup.server_port)
     );
 
+    let body = communication
+        .response
+        .await
+        .unwrap()
+        .body_mut()
+        .concat()
+        .await;
+    assert_eq!(String::from_utf8(body).unwrap(), "Hello, World!");
     /*
     let req = setup.rx_req.next().await.unwrap();
     assert_eq!(

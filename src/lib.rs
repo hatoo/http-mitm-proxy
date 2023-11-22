@@ -1,7 +1,10 @@
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::{
-    channel::mpsc::{UnboundedReceiver, UnboundedSender},
+    channel::{
+        mpsc::{UnboundedReceiver, UnboundedSender},
+        oneshot::Canceled,
+    },
     Stream,
 };
 use http_body_util::{combinators::BoxBody, BodyExt, Empty, StreamBody};
@@ -45,8 +48,15 @@ impl MitmProxy {
     }
 }
 
+pub struct Upgrade {
+    pub client_to_server: UnboundedReceiver<Vec<u8>>,
+    pub server_to_client: UnboundedReceiver<Vec<u8>>,
+}
+
 pub struct Communication {
     pub request: Request<UnboundedReceiver<Vec<u8>>>,
+    pub response: futures::channel::oneshot::Receiver<Response<UnboundedReceiver<Vec<u8>>>>,
+    pub upgrade: futures::channel::oneshot::Receiver<Upgrade>,
 }
 
 impl MitmProxy {
@@ -236,26 +246,23 @@ impl MitmProxy {
 
             let res = tokio::spawn(sender.send_request(req));
 
+            let (res_tx, res_rx) = futures::channel::oneshot::channel();
+            let (upgrade_tx, upgrade_rx) = futures::channel::oneshot::channel();
             // Used tokio::spawn above to middle_man can consume rx in request()
             let _ = tx.unbounded_send(Communication {
                 request: req_middleman,
+                response: res_rx,
+                upgrade: upgrade_rx,
             });
-            // let key = self.middle_man().request(req_middleman).await;
 
             let res = res.await.unwrap()?;
             let status = res.status();
             let (res, res_upgrade, res_middleman) = dup_response(res);
 
-            let proxy = self.clone();
-            /*
-            let key =
-                tokio::spawn(async move { proxy.middle_man().response(key, res_middleman).await });
-                */
+            let _ = res_tx.send(res_middleman);
 
-            /*
             // https://developer.mozilla.org/ja/docs/Web/HTTP/Status/101
             if status == StatusCode::SWITCHING_PROTOCOLS {
-                let proxy = self.clone();
                 tokio::task::spawn(async move {
                     match (
                         hyper::upgrade::on(Request::from_parts(req_parts, Empty::<Bytes>::new()))
@@ -265,15 +272,16 @@ impl MitmProxy {
                         (Ok(client), Ok(server)) => {
                             let (rx_client, rx_server) =
                                 upgrade(TokioIo::new(client), TokioIo::new(server)).await;
-                            let key = key.await.unwrap();
-                            proxy.middle_man().upgrade(key, rx_client, rx_server).await;
+                            let _ = upgrade_tx.send(Upgrade {
+                                client_to_server: rx_client,
+                                server_to_client: rx_server,
+                            });
                         }
                         (Err(e), _) => eprintln!("upgrade error: {}", e),
                         _ => todo!(),
                     }
                 });
             }
-            */
             Ok(res)
         }
     }
