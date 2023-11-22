@@ -169,9 +169,7 @@ impl<T: MiddleMan<K> + Send + Sync + 'static, K: Sync + Send + 'static> MitmProx
                                 async move {
                                     let mut lock = sender.lock().await;
 
-                                    let (req, mut req_middleman, _req_parts) = dup_request(req);
-                                    let res = lock.send_request(req).await.unwrap();
-                                    drop(lock);
+                                    let (req, mut req_middleman, req_parts) = dup_request(req);
                                     let req_uri = req_middleman.uri().clone();
                                     let mut parts = req_uri.into_parts();
                                     parts.scheme = Some(hyper::http::uri::Scheme::HTTPS);
@@ -180,9 +178,47 @@ impl<T: MiddleMan<K> + Send + Sync + 'static, K: Sync + Send + 'static> MitmProx
                                     );
                                     *req_middleman.uri_mut() =
                                         hyper::http::uri::Uri::from_parts(parts).unwrap();
-                                    let key = proxy.middle_man().request(req_middleman).await;
-                                    let (res, _res_upgrade, res_middleman) = dup_reaponse(res);
-                                    proxy.middle_man().response(key, res_middleman).await;
+                                    let res = lock.send_request(req).await.unwrap();
+                                    let (res, res_upgrade, res_middleman) = dup_reaponse(res);
+                                    let proxy2 = proxy.clone();
+                                    let key = tokio::spawn(async move {
+                                        proxy2.middle_man().request(req_middleman).await
+                                    });
+                                    if res.status() == StatusCode::SWITCHING_PROTOCOLS {
+                                        let proxy = proxy.clone();
+                                        tokio::task::spawn(async move {
+                                            match (
+                                                hyper::upgrade::on(Request::from_parts(
+                                                    req_parts,
+                                                    Empty::<Bytes>::new(),
+                                                ))
+                                                .await,
+                                                hyper::upgrade::on(res_upgrade).await,
+                                            ) {
+                                                (Ok(client), Ok(server)) => {
+                                                    let (rx_client, rx_server) = upgrade(
+                                                        TokioIo::new(client),
+                                                        TokioIo::new(server),
+                                                    )
+                                                    .await;
+
+                                                    let key = key.await.unwrap();
+                                                    proxy
+                                                        .middle_man()
+                                                        .upgrade(key, rx_client, rx_server)
+                                                        .await;
+                                                }
+                                                (Err(e), _) => eprintln!("upgrade error: {}", e),
+                                                _ => todo!(),
+                                            }
+                                        });
+                                        return Ok::<_, hyper::Error>(res);
+                                    }
+                                    drop(lock);
+                                    proxy
+                                        .middle_man()
+                                        .response(key.await.unwrap(), res_middleman)
+                                        .await;
 
                                     Ok::<_, hyper::Error>(res)
                                 }
@@ -244,47 +280,8 @@ impl<T: MiddleMan<K> + Send + Sync + 'static, K: Sync + Send + 'static> MitmProx
                         hyper::upgrade::on(res_upgrade).await,
                     ) {
                         (Ok(client), Ok(server)) => {
-                            let (tx_client, rx_client) = futures::channel::mpsc::unbounded();
-                            let (tx_server, rx_server) = futures::channel::mpsc::unbounded();
-
-                            let mut client = TokioIo::new(client);
-                            let mut server = TokioIo::new(server);
-                            tokio::spawn(async move {
-                                let mut buf1 = Vec::new();
-                                let mut buf2 = Vec::new();
-                                loop {
-                                    buf1.clear();
-                                    buf2.clear();
-                                    tokio::select! {
-                                        r = client.read_buf(&mut buf1) => {
-                                            if r.is_err() {
-                                                break;
-                                            }
-                                            if let Ok(0) = r {
-                                                break;
-                                            }
-                                            if server.write_all(&buf1).await.is_err() {
-                                                break;
-                                            }
-                                            let _ = tx_client.unbounded_send(buf1.clone());
-                                        }
-
-                                        r = server.read_buf(&mut buf2) => {
-                                            if r.is_err() {
-                                                break;
-                                            }
-                                            if let Ok(0) = r {
-                                                break;
-                                            }
-                                            if client.write_all(&buf2).await.is_err() {
-                                                break;
-                                            }
-                                            let _ = tx_server.unbounded_send(buf2.clone());
-                                        }
-                                    }
-                                }
-                            });
-
+                            let (rx_client, rx_server) =
+                                upgrade(TokioIo::new(client), TokioIo::new(server)).await;
                             let key = key.await.unwrap();
                             proxy.middle_man().upgrade(key, rx_client, rx_server).await;
                         }
@@ -296,6 +293,54 @@ impl<T: MiddleMan<K> + Send + Sync + 'static, K: Sync + Send + 'static> MitmProx
             Ok(res)
         }
     }
+}
+
+async fn upgrade<
+    S1: AsyncReadExt + AsyncWriteExt + Unpin + Send + 'static,
+    S2: AsyncReadExt + AsyncWriteExt + Unpin + Send + 'static,
+>(
+    mut client: S1,
+    mut server: S2,
+) -> (UnboundedReceiver<Vec<u8>>, UnboundedReceiver<Vec<u8>>) {
+    let (tx_client, rx_client) = futures::channel::mpsc::unbounded();
+    let (tx_server, rx_server) = futures::channel::mpsc::unbounded();
+
+    tokio::spawn(async move {
+        let mut buf1 = Vec::new();
+        let mut buf2 = Vec::new();
+        loop {
+            buf1.clear();
+            buf2.clear();
+            tokio::select! {
+                r = client.read_buf(&mut buf1) => {
+                    if r.is_err() {
+                        break;
+                    }
+                    if let Ok(0) = r {
+                        break;
+                    }
+                    if server.write_all(&buf1).await.is_err() {
+                        break;
+                    }
+                    let _ = tx_client.unbounded_send(buf1.clone());
+                }
+
+                r = server.read_buf(&mut buf2) => {
+                    if r.is_err() {
+                        break;
+                    }
+                    if let Ok(0) = r {
+                        break;
+                    }
+                    if client.write_all(&buf2).await.is_err() {
+                        break;
+                    }
+                    let _ = tx_server.unbounded_send(buf2.clone());
+                }
+            }
+        }
+    });
+    (rx_client, rx_server)
 }
 
 fn dup_request(
