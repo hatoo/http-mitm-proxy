@@ -170,14 +170,10 @@ impl<T: MiddleMan<K> + Send + Sync + 'static, K: Sync + Send + 'static> MitmProx
                                     let mut lock = sender.lock().await;
 
                                     let (req, mut req_middleman, req_parts) = dup_request(req);
-                                    let req_uri = req_middleman.uri().clone();
-                                    let mut parts = req_uri.into_parts();
-                                    parts.scheme = Some(hyper::http::uri::Scheme::HTTPS);
-                                    parts.authority = Some(
+                                    inject_authority(
+                                        &mut req_middleman,
                                         hyper::http::uri::Authority::try_from(authority).unwrap(),
                                     );
-                                    *req_middleman.uri_mut() =
-                                        hyper::http::uri::Uri::from_parts(parts).unwrap();
                                     let res = lock.send_request(req).await.unwrap();
                                     let (res, res_upgrade, res_middleman) = dup_reaponse(res);
                                     let proxy2 = proxy.clone();
@@ -293,6 +289,16 @@ impl<T: MiddleMan<K> + Send + Sync + 'static, K: Sync + Send + 'static> MitmProx
             Ok(res)
         }
     }
+}
+
+fn inject_authority(
+    request_middleman: &mut Request<UnboundedReceiver<Vec<u8>>>,
+    authority: hyper::http::uri::Authority,
+) {
+    let mut parts = request_middleman.uri().clone().into_parts();
+    parts.scheme = Some(hyper::http::uri::Scheme::HTTPS);
+    parts.authority = Some(authority);
+    *request_middleman.uri_mut() = hyper::http::uri::Uri::from_parts(parts).unwrap();
 }
 
 async fn upgrade<
