@@ -57,7 +57,7 @@ pub struct Communication {
 }
 
 impl MitmProxy {
-    pub async fn bind<A: ToSocketAddrs>(
+    pub async fn serve<A: ToSocketAddrs>(
         &self,
         addr: A,
     ) -> Result<impl Stream<Item = Communication>, std::io::Error> {

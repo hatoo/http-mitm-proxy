@@ -103,7 +103,7 @@ async fn setup(app: Router) -> Setup {
     );
     let proxy_port = get_port();
 
-    let proxy_server = proxy.bind(("127.0.0.1", proxy_port)).await.unwrap();
+    let proxy_server = proxy.serve(("127.0.0.1", proxy_port)).await.unwrap();
 
     let client = client(proxy_port);
 
@@ -150,7 +150,7 @@ async fn setup_tls(app: Router, without_cert: bool) -> Setup {
     );
     let proxy_port = get_port();
 
-    let proxy_server = proxy.bind(("127.0.0.1", proxy_port)).await.unwrap();
+    let proxy_server = proxy.serve(("127.0.0.1", proxy_port)).await.unwrap();
 
     let client = client(proxy_port);
 
