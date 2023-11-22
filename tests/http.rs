@@ -161,7 +161,7 @@ fn root_cert() -> rcgen::Certificate {
     rcgen::Certificate::from_params(param).unwrap()
 }
 
-async fn setup_tls(app: Router) -> Setup {
+async fn setup_tls(app: Router, without_cert: bool) -> Setup {
     let (server_port, server) = bind_app_tls(app).await;
 
     tokio::spawn(server);
@@ -169,8 +169,14 @@ async fn setup_tls(app: Router) -> Setup {
     let (req_tx, rx_req) = unbounded();
     let (res_tx, rx_res) = unbounded();
 
-    let mut proxy =
-        http_mitm_proxy::MitmProxy::new(ChannelMan::new(req_tx, res_tx), Some(root_cert()));
+    let mut proxy = http_mitm_proxy::MitmProxy::new(
+        ChannelMan::new(req_tx, res_tx),
+        if without_cert {
+            None
+        } else {
+            Some(root_cert())
+        },
+    );
     proxy.tls_connector = Some(
         tokio_native_tls::native_tls::TlsConnector::builder()
             .danger_accept_invalid_certs(true)
@@ -336,7 +342,7 @@ async fn handle_socket(mut socket: WebSocket) {
 async fn test_tls_simple() {
     let app = Router::new().route("/", get(|| async { "Hello, World!" }));
 
-    let mut setup = setup_tls(app).await;
+    let mut setup = setup_tls(app, false).await;
 
     let response = setup
         .client
@@ -365,10 +371,27 @@ async fn test_tls_simple() {
 }
 
 #[tokio::test]
+async fn test_tls_simple_tunnel() {
+    let app = Router::new().route("/", get(|| async { "Hello, World!" }));
+
+    let setup = setup_tls(app, true).await;
+
+    let response = setup
+        .client
+        .get(format!("https://127.0.0.1:{}/", setup.server_port))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.bytes().await.unwrap().as_ref(), b"Hello, World!");
+}
+
+#[tokio::test]
 async fn test_tls_keep_alive() {
     let app = Router::new().route("/", get(|| async { "Hello, World!" }));
 
-    let mut setup = setup_tls(app).await;
+    let mut setup = setup_tls(app, false).await;
 
     // reqwest wii use single connection with keep-alive
     for _ in 0..16 {
@@ -403,7 +426,7 @@ async fn test_tls_sse() {
         }),
     );
 
-    let mut setup = setup_tls(app).await;
+    let mut setup = setup_tls(app, false).await;
     setup
         .client
         .get(format!("https://127.0.0.1:{}/sse", setup.server_port))
