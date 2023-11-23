@@ -175,9 +175,7 @@ impl MitmProxy {
                                         upgrade: upgrade_rx,
                                     });
 
-                                    let mut lock = sender.lock().await;
-
-                                    let res = lock.send_request(req).await?;
+                                    let res = sender.lock().await.send_request(req).await?;
                                     let (res, res_upgrade, res_middleman) = dup_response(res);
 
                                     let _ = res_tx.send(res_middleman);
@@ -209,7 +207,6 @@ impl MitmProxy {
                                         });
                                         return Ok::<_, hyper::Error>(res);
                                     }
-                                    drop(lock);
 
                                     Ok::<_, hyper::Error>(res)
                                 }
