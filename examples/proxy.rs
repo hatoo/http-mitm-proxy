@@ -28,15 +28,18 @@ async fn main() {
         tokio_native_tls::native_tls::TlsConnector::new().unwrap(),
     );
 
-    let (mut branch, server) = proxy.bind(("127.0.0.1", 3333)).await.unwrap();
+    let (mut branch, server) = proxy.bind(("127.0.0.1", 3003)).await.unwrap();
     tokio::spawn(server);
 
-    println!("HTTP Proxy is listening on http://127.0.0.1:3333");
+    println!("HTTP Proxy is listening on http://127.0.0.1:3003");
 
+    println!();
     println!("Trust this cert if you want to use HTTPS");
+    println!();
     println!("{}", root_cert.serialize_pem().unwrap());
+    println!();
 
     while let Some(comm) = branch.next().await {
-        dbg!(comm.request.uri());
+        println!("{}", comm.request.uri());
     }
 }
