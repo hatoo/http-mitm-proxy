@@ -51,6 +51,7 @@ pub struct Upgrade {
 }
 
 pub struct Communication {
+    pub client_addr: std::net::SocketAddr,
     pub request: Request<UnboundedReceiver<Vec<u8>>>,
     pub response: futures::channel::oneshot::Receiver<Response<UnboundedReceiver<Vec<u8>>>>,
     pub upgrade: futures::channel::oneshot::Receiver<Upgrade>,
@@ -69,26 +70,31 @@ impl MitmProxy {
         let serve = async move {
             loop {
                 let stream = listener.accept().await;
-                let Ok((stream, _)) = stream else {
+                let Ok((stream, client_addr)) = stream else {
                     continue;
                 };
                 let tx = tx.clone();
 
                 let proxy = proxy.clone();
-                tokio::spawn(async move { proxy.handle(stream, tx).await });
+                tokio::spawn(async move { proxy.handle(stream, tx, client_addr).await });
             }
         };
 
         Ok((rx, serve))
     }
 
-    async fn handle(&self, stream: tokio::net::TcpStream, tx: UnboundedSender<Communication>) {
+    async fn handle(
+        &self,
+        stream: tokio::net::TcpStream,
+        tx: UnboundedSender<Communication>,
+        client_addr: std::net::SocketAddr,
+    ) {
         let _ = server::conn::http1::Builder::new()
             .preserve_header_case(true)
             .title_case_headers(true)
             .serve_connection(
                 TokioIo::new(stream),
-                service_fn(|req| self.proxy(req, tx.clone())),
+                service_fn(|req| self.proxy(req, tx.clone(), client_addr)),
             )
             .with_upgrades()
             .await;
@@ -98,6 +104,7 @@ impl MitmProxy {
         &self,
         req: Request<hyper::body::Incoming>,
         tx: UnboundedSender<Communication>,
+        client_addr: std::net::SocketAddr,
     ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Error> {
         if req.method() == Method::CONNECT {
             let uri = req.uri().clone();
@@ -160,6 +167,7 @@ impl MitmProxy {
                                     let (upgrade_tx, upgrade_rx) =
                                         futures::channel::oneshot::channel();
                                     let _ = tx.unbounded_send(Communication {
+                                        client_addr,
                                         request: req_middleman,
                                         response: res_rx,
                                         upgrade: upgrade_rx,
@@ -239,6 +247,7 @@ impl MitmProxy {
             let (upgrade_tx, upgrade_rx) = futures::channel::oneshot::channel();
             // Used tokio::spawn above to middle_man can consume rx in request()
             let _ = tx.unbounded_send(Communication {
+                client_addr,
                 request: req_middleman,
                 response: res_rx,
                 upgrade: upgrade_rx,
