@@ -323,7 +323,7 @@ async fn upgrade<
     tokio::spawn(async move {
         loop {
             let mut buf = vec![];
-            let n = client_read.read(&mut buf).await?;
+            let n = client_read.read_buf(&mut buf).await?;
             if n == 0 {
                 break;
             }
@@ -335,7 +335,7 @@ async fn upgrade<
     tokio::spawn(async move {
         loop {
             let mut buf = vec![];
-            let n = server_read.read(&mut buf).await?;
+            let n = server_read.read_buf(&mut buf).await?;
             if n == 0 {
                 break;
             }

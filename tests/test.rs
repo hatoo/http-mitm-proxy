@@ -21,6 +21,7 @@ use hyper::{header, Request, Uri};
 use rcgen::generate_simple_self_signed;
 use reqwest::Client;
 use rustls::ServerConfig;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::tokiort::TokioIo;
 
@@ -299,7 +300,7 @@ async fn test_sse() {
 
 #[tokio::test]
 async fn test_upgrade() {
-    let app = Router::new().route("/ws", get(ws_handler));
+    let app = Router::new().route("/upgrade", get(upgrade_handler));
     let setup = setup(app).await;
 
     let stream = tokio::net::TcpStream::connect(("127.0.0.1", setup.proxy_port))
@@ -311,12 +312,10 @@ async fn test_upgrade() {
     let mut res = send_request
         .send_request(
             Request::get(
-                Uri::try_from(format!("http://127.0.0.1:{}/ws", setup.server_port)).unwrap(),
+                Uri::try_from(format!("http://127.0.0.1:{}/upgrade", setup.server_port)).unwrap(),
             )
-            .header(header::UPGRADE, "websocket")
+            .header(header::UPGRADE, "raw")
             .header(header::CONNECTION, "Upgrade")
-            .header(header::SEC_WEBSOCKET_KEY, "dGhlIHNhbXBsZSBub25jZQ==")
-            .header(header::SEC_WEBSOCKET_VERSION, "13")
             .body(Empty::<Bytes>::new())
             .unwrap(),
         )
@@ -324,27 +323,27 @@ async fn test_upgrade() {
         .unwrap();
 
     res.body_mut().collect().await.unwrap();
-    let _stream = hyper::upgrade::on(res).await.unwrap();
-    // FIXME: there are no websocket library supports proxy.
+    let mut stream = TokioIo::new(hyper::upgrade::on(res).await.unwrap());
+    let mut buf = [0u8; 4];
+    stream.read_exact(&mut buf).await.unwrap();
+    assert_eq!(&buf, b"ping");
+    stream.write_all(b"pong").await.unwrap();
 }
 
-async fn ws_handler(ws: WebSocketUpgrade) -> impl IntoResponse {
-    ws.on_upgrade(handle_socket)
-}
+async fn upgrade_handler<B: Send + 'static>(req: axum::http::Request<B>) -> impl IntoResponse {
+    tokio::spawn(async move {
+        let mut socket = hyper14::upgrade::on(req).await.unwrap();
 
-async fn handle_socket(mut socket: WebSocket) {
-    // receive single message from a client (we can either receive or send with socket).
-    // this will likely be the Pong for our Ping or a hello message from client.
-    // waiting for message from a client will block this task, but will not block other client's
-    // connections.
-    if let Some(msg) = socket.recv().await {
-        let _ = msg.unwrap();
-    }
+        socket.write_all(b"ping").await.unwrap();
+        let mut buf = [0u8; 4];
+        socket.read_exact(&mut buf).await.unwrap();
+        assert_eq!(&buf, b"pong");
+    });
 
-    socket
-        .send(Message::Text("Hello, World!".to_string()))
-        .await
-        .unwrap();
+    axum::http::Response::builder()
+        .status(axum::http::StatusCode::SWITCHING_PROTOCOLS)
+        .body(axum::body::Empty::new())
+        .unwrap()
 }
 
 #[tokio::test]
