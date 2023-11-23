@@ -138,11 +138,13 @@ async fn setup_tls(app: Router, without_cert: bool) -> Setup {
 
     tokio::spawn(server);
 
+    let root_cert = Arc::new(root_cert());
+
     let proxy = http_mitm_proxy::MitmProxy::new(
         if without_cert {
             None
         } else {
-            Some(Arc::new(root_cert()))
+            Some(root_cert.clone())
         },
         tokio_native_tls::native_tls::TlsConnector::builder()
             .danger_accept_invalid_certs(true)
@@ -156,7 +158,23 @@ async fn setup_tls(app: Router, without_cert: bool) -> Setup {
 
     tokio::spawn(server);
 
-    let client = client(proxy_port);
+    let client_builder = reqwest::Client::builder()
+        .proxy(reqwest::Proxy::http(format!("http://127.0.0.1:{}", proxy_port)).unwrap())
+        .proxy(reqwest::Proxy::https(format!("http://127.0.0.1:{}", proxy_port)).unwrap());
+
+    let client = if !without_cert {
+        client_builder
+            .add_root_certificate(
+                reqwest::Certificate::from_der(&root_cert.serialize_der().unwrap()).unwrap(),
+            )
+            .build()
+            .unwrap()
+    } else {
+        client_builder
+            .danger_accept_invalid_certs(true)
+            .build()
+            .unwrap()
+    };
 
     Setup {
         proxy_port,

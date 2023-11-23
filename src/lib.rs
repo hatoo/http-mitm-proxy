@@ -116,7 +116,8 @@ impl MitmProxy {
                 let client = hyper::upgrade::on(req).await.unwrap();
 
                 if let Some(root_cert) = proxy.root_cert.as_ref() {
-                    let server_config = server_config(authority.to_string(), root_cert).unwrap();
+                    let server_config =
+                        server_config(uri.host().unwrap().to_string(), root_cert).unwrap();
                     // TODO: Cache server_config
                     let server_config = Arc::new(server_config);
                     let tls_acceptor = tokio_rustls::TlsAcceptor::from(server_config);
