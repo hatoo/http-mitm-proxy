@@ -107,31 +107,24 @@ impl MitmProxy {
         client_addr: std::net::SocketAddr,
     ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Error> {
         if req.method() == Method::CONNECT {
-            let uri = req.uri().clone();
-
             let proxy = self.clone();
             tokio::spawn(async move {
+                let uri = req.uri().clone();
                 let authority = uri.authority().unwrap().as_str();
-
+                let host = uri.host().unwrap();
                 let client = hyper::upgrade::on(req).await.unwrap();
 
                 if let Some(root_cert) = proxy.root_cert.as_ref() {
-                    let server_config =
-                        server_config(uri.host().unwrap().to_string(), root_cert).unwrap();
+                    let server_config = server_config(host.to_string(), root_cert).unwrap();
                     // TODO: Cache server_config
                     let server_config = Arc::new(server_config);
                     let tls_acceptor = tokio_rustls::TlsAcceptor::from(server_config);
                     let client = tls_acceptor.accept(TokioIo::new(client)).await.unwrap();
 
-                    let server = TcpStream::connect(uri.authority().unwrap().as_str())
-                        .await
-                        .unwrap();
+                    let server = TcpStream::connect(authority).await.unwrap();
                     let native_tls_connector = proxy.tls_connector.clone();
                     let connector = tokio_native_tls::TlsConnector::from(native_tls_connector);
-                    let server = connector
-                        .connect(uri.host().unwrap(), server)
-                        .await
-                        .unwrap();
+                    let server = connector.connect(host, server).await.unwrap();
                     let (sender, conn) = client::conn::http1::Builder::new()
                         .preserve_header_case(true)
                         .title_case_headers(true)
