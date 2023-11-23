@@ -11,11 +11,11 @@ use hyper::{
     service::service_fn,
     Method, Request, Response, StatusCode,
 };
-use std::sync::Arc;
+use std::{future::Future, sync::Arc};
 use tls::server_config;
-use tokio::net::{TcpListener, TcpStream, ToSocketAddrs};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
+    net::{TcpListener, TcpStream, ToSocketAddrs},
     sync::Mutex,
 };
 use tokiort::TokioIo;
@@ -57,16 +57,16 @@ pub struct Communication {
 }
 
 impl MitmProxy {
-    pub async fn serve<A: ToSocketAddrs>(
+    pub async fn bind<A: ToSocketAddrs>(
         &self,
         addr: A,
-    ) -> Result<impl Stream<Item = Communication>, std::io::Error> {
+    ) -> Result<(impl Stream<Item = Communication>, impl Future<Output = ()>), std::io::Error> {
         let listener = TcpListener::bind(addr).await?;
         let (tx, rx) = futures::channel::mpsc::unbounded();
 
         let proxy = self.clone();
 
-        tokio::spawn(async move {
+        let serve = async move {
             loop {
                 let stream = listener.accept().await;
                 let Ok((stream, _)) = stream else {
@@ -77,9 +77,9 @@ impl MitmProxy {
                 let proxy = proxy.clone();
                 tokio::spawn(async move { proxy.handle(stream, tx).await });
             }
-        });
+        };
 
-        Ok(rx)
+        Ok((rx, serve))
     }
 
     async fn handle(&self, stream: tokio::net::TcpStream, tx: UnboundedSender<Communication>) {

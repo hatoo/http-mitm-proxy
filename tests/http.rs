@@ -103,14 +103,16 @@ async fn setup(app: Router) -> Setup {
     );
     let proxy_port = get_port();
 
-    let proxy_server = proxy.serve(("127.0.0.1", proxy_port)).await.unwrap();
+    let (branch, server) = proxy.bind(("127.0.0.1", proxy_port)).await.unwrap();
+
+    tokio::spawn(server);
 
     let client = client(proxy_port);
 
     Setup {
         proxy_port,
         server_port,
-        proxy: proxy_server.boxed(),
+        proxy: branch.boxed(),
         client,
     }
 }
@@ -150,14 +152,16 @@ async fn setup_tls(app: Router, without_cert: bool) -> Setup {
     );
     let proxy_port = get_port();
 
-    let proxy_server = proxy.serve(("127.0.0.1", proxy_port)).await.unwrap();
+    let (branch, server) = proxy.bind(("127.0.0.1", proxy_port)).await.unwrap();
+
+    tokio::spawn(server);
 
     let client = client(proxy_port);
 
     Setup {
         proxy_port,
         server_port,
-        proxy: proxy_server.boxed(),
+        proxy: branch.boxed(),
         client,
     }
 }
