@@ -4,29 +4,21 @@ use std::{
 };
 
 use axum::{
-    extract::ws::{Message, WebSocket, WebSocketUpgrade},
     response::{sse::Event, IntoResponse, Sse},
     routing::get,
     Router,
 };
 use axum_server::tls_rustls::RustlsConfig;
-use bytes::Bytes;
 use futures::{
     stream::{self, BoxStream},
     StreamExt,
 };
-use http_body_util::{BodyExt, Empty};
 use http_mitm_proxy::Communication;
-use hyper::{header, Request, Uri};
+use hyper::header;
 use rcgen::generate_simple_self_signed;
 use reqwest::Client;
 use rustls::ServerConfig;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-use crate::tokiort::TokioIo;
-
-#[path = "../src/tokiort.rs"]
-mod tokiort;
 
 static PORT: AtomicU16 = AtomicU16::new(3666);
 
@@ -92,7 +84,7 @@ fn client(proxy_port: u16) -> reqwest::Client {
 }
 
 struct Setup {
-    proxy_port: u16,
+    _proxy_port: u16,
     server_port: u16,
     proxy: BoxStream<'static, Communication>,
     client: Client,
@@ -116,7 +108,7 @@ async fn setup(app: Router) -> Setup {
     let client = client(proxy_port);
 
     Setup {
-        proxy_port,
+        _proxy_port: proxy_port,
         server_port,
         proxy: branch.boxed(),
         client,
@@ -183,7 +175,7 @@ async fn setup_tls(app: Router, without_cert: bool) -> Setup {
     };
 
     Setup {
-        proxy_port,
+        _proxy_port: proxy_port,
         server_port,
         proxy: branch.boxed(),
         client,
@@ -303,27 +295,16 @@ async fn test_upgrade() {
     let app = Router::new().route("/upgrade", get(upgrade_handler));
     let setup = setup(app).await;
 
-    let stream = tokio::net::TcpStream::connect(("127.0.0.1", setup.proxy_port))
-        .await
-        .unwrap();
-    let io = TokioIo::new(stream);
-    let (mut send_request, conn) = hyper::client::conn::http1::handshake(io).await.unwrap();
-    tokio::spawn(conn.with_upgrades());
-    let mut res = send_request
-        .send_request(
-            Request::get(
-                Uri::try_from(format!("http://127.0.0.1:{}/upgrade", setup.server_port)).unwrap(),
-            )
-            .header(header::UPGRADE, "raw")
-            .header(header::CONNECTION, "Upgrade")
-            .body(Empty::<Bytes>::new())
-            .unwrap(),
-        )
+    let res = setup
+        .client
+        .get(format!("http://127.0.0.1:{}/upgrade", setup.server_port))
+        .header(axum::http::header::UPGRADE, "raw")
+        .header(axum::http::header::CONNECTION, "Upgrade")
+        .send()
         .await
         .unwrap();
 
-    res.body_mut().collect().await.unwrap();
-    let mut stream = TokioIo::new(hyper::upgrade::on(res).await.unwrap());
+    let mut stream = res.upgrade().await.unwrap();
     let mut buf = [0u8; 4];
     stream.read_exact(&mut buf).await.unwrap();
     assert_eq!(&buf, b"ping");
@@ -469,4 +450,25 @@ async fn test_tls_sse() {
         body,
         b"event:message\ndata:1\n\nevent:message\ndata:2\n\nevent:message\ndata:3\n\n"
     );
+}
+
+#[tokio::test]
+async fn test_tls_upgrade() {
+    let app = Router::new().route("/upgrade", get(upgrade_handler));
+    let setup = setup_tls(app, false).await;
+
+    let res = setup
+        .client
+        .get(format!("https://127.0.0.1:{}/upgrade", setup.server_port))
+        .header(axum::http::header::UPGRADE, "raw")
+        .header(axum::http::header::CONNECTION, "Upgrade")
+        .send()
+        .await
+        .unwrap();
+
+    let mut stream = res.upgrade().await.unwrap();
+    let mut buf = [0u8; 4];
+    stream.read_exact(&mut buf).await.unwrap();
+    assert_eq!(&buf, b"ping");
+    stream.write_all(b"pong").await.unwrap();
 }
