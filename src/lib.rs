@@ -311,47 +311,40 @@ async fn upgrade<
     S1: AsyncReadExt + AsyncWriteExt + Unpin + Send + 'static,
     S2: AsyncReadExt + AsyncWriteExt + Unpin + Send + 'static,
 >(
-    mut client: S1,
-    mut server: S2,
+    client: S1,
+    server: S2,
 ) -> (UnboundedReceiver<Vec<u8>>, UnboundedReceiver<Vec<u8>>) {
     let (tx_client, rx_client) = futures::channel::mpsc::unbounded();
     let (tx_server, rx_server) = futures::channel::mpsc::unbounded();
 
-    tokio::spawn(async move {
-        let mut buf1 = Vec::new();
-        let mut buf2 = Vec::new();
-        loop {
-            buf1.clear();
-            buf2.clear();
-            tokio::select! {
-                r = client.read_buf(&mut buf1) => {
-                    if r.is_err() {
-                        break;
-                    }
-                    if let Ok(0) = r {
-                        break;
-                    }
-                    if server.write_all(&buf1).await.is_err() {
-                        break;
-                    }
-                    let _ = tx_client.unbounded_send(buf1.clone());
-                }
+    let (mut client_read, mut client_write) = tokio::io::split(client);
+    let (mut server_read, mut server_write) = tokio::io::split(server);
 
-                r = server.read_buf(&mut buf2) => {
-                    if r.is_err() {
-                        break;
-                    }
-                    if let Ok(0) = r {
-                        break;
-                    }
-                    if client.write_all(&buf2).await.is_err() {
-                        break;
-                    }
-                    let _ = tx_server.unbounded_send(buf2.clone());
-                }
+    tokio::spawn(async move {
+        loop {
+            let mut buf = vec![];
+            let n = client_read.read(&mut buf).await?;
+            if n == 0 {
+                break;
             }
+            server_write.write_all(&buf).await?;
+            let _ = tx_client.unbounded_send(buf);
         }
+        Ok::<(), std::io::Error>(())
     });
+    tokio::spawn(async move {
+        loop {
+            let mut buf = vec![];
+            let n = server_read.read(&mut buf).await?;
+            if n == 0 {
+                break;
+            }
+            client_write.write_all(&buf).await?;
+            let _ = tx_server.unbounded_send(buf);
+        }
+        Ok::<(), std::io::Error>(())
+    });
+
     (rx_client, rx_server)
 }
 
