@@ -110,31 +110,47 @@ impl MitmProxy {
             let proxy = self.clone();
             tokio::spawn(async move {
                 let uri = req.uri().clone();
-                let authority = uri.authority().unwrap().as_str();
-                let host = uri.host().unwrap();
-                let client = hyper::upgrade::on(req).await.unwrap();
+                let Some(authority) = uri.authority() else {
+                    return;
+                };
+                let Some(host) = uri.host() else {
+                    return;
+                };
+                let Ok(client) = hyper::upgrade::on(req).await else {
+                    return;
+                };
 
                 if let Some(root_cert) = proxy.root_cert.as_ref() {
-                    let server_config = server_config(host.to_string(), root_cert).unwrap();
+                    let Ok(server_config) = server_config(host.to_string(), root_cert) else {
+                        return;
+                    };
                     // TODO: Cache server_config
                     let server_config = Arc::new(server_config);
                     let tls_acceptor = tokio_rustls::TlsAcceptor::from(server_config);
-                    let client = tls_acceptor.accept(TokioIo::new(client)).await.unwrap();
+                    let Ok(client) = tls_acceptor.accept(TokioIo::new(client)).await else {
+                        return;
+                    };
 
-                    let server = TcpStream::connect(authority).await.unwrap();
+                    let Ok(server) = TcpStream::connect(authority.as_str()).await else {
+                        return;
+                    };
                     let native_tls_connector = proxy.tls_connector.clone();
                     let connector = tokio_native_tls::TlsConnector::from(native_tls_connector);
-                    let server = connector.connect(host, server).await.unwrap();
-                    let (sender, conn) = client::conn::http1::Builder::new()
+                    let Ok(server) = connector.connect(host, server).await else {
+                        return;
+                    };
+                    let Ok((sender, conn)) = client::conn::http1::Builder::new()
                         .preserve_header_case(true)
                         .title_case_headers(true)
                         .handshake(TokioIo::new(server))
                         .await
-                        .unwrap();
+                    else {
+                        return;
+                    };
 
                     tokio::spawn(conn.with_upgrades());
 
-                    let authority = authority.to_string();
+                    let authority = authority.clone();
                     let sender = Arc::new(Mutex::new(sender));
                     let _ = server::conn::http1::Builder::new()
                         .preserve_header_case(true)
@@ -147,16 +163,8 @@ impl MitmProxy {
                                 let tx = tx.clone();
 
                                 async move {
-                                    let mut lock = sender.lock().await;
-
                                     let (req, mut req_middleman, req_parts) = dup_request(req);
-                                    inject_authority(
-                                        &mut req_middleman,
-                                        hyper::http::uri::Authority::try_from(authority).unwrap(),
-                                    );
-                                    let res = lock.send_request(req).await.unwrap();
-                                    let (res, res_upgrade, res_middleman) = dup_response(res);
-
+                                    inject_authority(&mut req_middleman, authority);
                                     let (res_tx, res_rx) = futures::channel::oneshot::channel();
                                     let (upgrade_tx, upgrade_rx) =
                                         futures::channel::oneshot::channel();
@@ -166,6 +174,13 @@ impl MitmProxy {
                                         response: res_rx,
                                         upgrade: upgrade_rx,
                                     });
+
+                                    let mut lock = sender.lock().await;
+
+                                    let res = lock.send_request(req).await?;
+                                    let (res, res_upgrade, res_middleman) = dup_response(res);
+
+                                    let _ = res_tx.send(res_middleman);
 
                                     if res.status() == StatusCode::SWITCHING_PROTOCOLS {
                                         tokio::task::spawn(async move {
@@ -189,14 +204,12 @@ impl MitmProxy {
                                                         server_to_client: rx_server,
                                                     });
                                                 }
-                                                (Err(e), _) => eprintln!("upgrade error: {}", e),
-                                                _ => todo!(),
+                                                _ => {}
                                             }
                                         });
                                         return Ok::<_, hyper::Error>(res);
                                     }
                                     drop(lock);
-                                    let _ = res_tx.send(res_middleman);
 
                                     Ok::<_, hyper::Error>(res)
                                 }
@@ -205,12 +218,13 @@ impl MitmProxy {
                         .with_upgrades()
                         .await;
                 } else {
-                    let mut server = TcpStream::connect(uri.authority().unwrap().as_str())
-                        .await
-                        .unwrap();
-                    tokio::io::copy_bidirectional(&mut TokioIo::new(client), &mut server)
-                        .await
-                        .unwrap();
+                    let Ok(mut server) =
+                        TcpStream::connect(uri.authority().unwrap().as_str()).await
+                    else {
+                        return;
+                    };
+                    let _ =
+                        tokio::io::copy_bidirectional(&mut TokioIo::new(client), &mut server).await;
                 }
             });
 
@@ -220,10 +234,14 @@ impl MitmProxy {
                     .boxed(),
             ))
         } else {
-            let host = req.uri().host().unwrap();
+            let Some(host) = req.uri().host() else {
+                return Ok(no_body(StatusCode::BAD_REQUEST));
+            };
             let port = req.uri().port_u16().unwrap_or(80);
 
-            let stream = TcpStream::connect((host, port)).await.unwrap();
+            let Ok(stream) = TcpStream::connect((host, port)).await else {
+                return Ok(no_body(StatusCode::BAD_GATEWAY));
+            };
 
             let (mut sender, conn) = client::conn::http1::Builder::new()
                 .preserve_header_case(true)
@@ -235,8 +253,6 @@ impl MitmProxy {
 
             let (req, req_middleman, req_parts) = dup_request(req);
 
-            let res = tokio::spawn(sender.send_request(req));
-
             let (res_tx, res_rx) = futures::channel::oneshot::channel();
             let (upgrade_tx, upgrade_rx) = futures::channel::oneshot::channel();
             // Used tokio::spawn above to middle_man can consume rx in request()
@@ -247,7 +263,7 @@ impl MitmProxy {
                 upgrade: upgrade_rx,
             });
 
-            let res = res.await.unwrap()?;
+            let res = sender.send_request(req).await?;
             let status = res.status();
             let (res, res_upgrade, res_middleman) = dup_response(res);
 
@@ -269,14 +285,19 @@ impl MitmProxy {
                                 server_to_client: rx_server,
                             });
                         }
-                        (Err(e), _) => eprintln!("upgrade error: {}", e),
-                        _ => todo!(),
+                        _ => {}
                     }
                 });
             }
             Ok(res)
         }
     }
+}
+
+fn no_body(status: StatusCode) -> Response<BoxBody<Bytes, hyper::Error>> {
+    let mut res = Response::new(Empty::new().map_err(|never| match never {}).boxed());
+    *res.status_mut() = status;
+    res
 }
 
 fn inject_authority(
