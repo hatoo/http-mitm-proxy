@@ -28,7 +28,7 @@ async fn main() {
         tokio_native_tls::native_tls::TlsConnector::new().unwrap(),
     );
 
-    let (mut branch, server) = proxy.bind(("127.0.0.1", 3003)).await.unwrap();
+    let (mut communications, server) = proxy.bind(("127.0.0.1", 3003)).await.unwrap();
     tokio::spawn(server);
 
     println!("HTTP Proxy is listening on http://127.0.0.1:3003");
@@ -39,7 +39,7 @@ async fn main() {
     println!("{}", root_cert.serialize_pem().unwrap());
     println!();
 
-    while let Some(comm) = branch.next().await {
+    while let Some(comm) = communications.next().await {
         if let Ok(mut response) = comm.response.await {
             println!(
                 "{}\t{}\t{}\t{}",
