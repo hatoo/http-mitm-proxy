@@ -111,6 +111,7 @@ impl MitmProxy {
 
             let proxy = self.clone();
             tokio::spawn(async move {
+                assert_eq!(uri.scheme(), Some(&hyper::http::uri::Scheme::HTTPS));
                 let authority = uri.authority().unwrap().as_str();
 
                 let client = hyper::upgrade::on(req).await.unwrap();
