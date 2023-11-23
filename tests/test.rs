@@ -16,11 +16,16 @@ use futures::{
     StreamExt,
 };
 use http_body_util::{BodyExt, Empty};
-use http_mitm_proxy::{tokiort::TokioIo, Communication};
+use http_mitm_proxy::Communication;
 use hyper::{header, Request, Uri};
 use rcgen::generate_simple_self_signed;
 use reqwest::Client;
 use rustls::ServerConfig;
+
+use crate::tokiort::TokioIo;
+
+#[path = "../src/tokiort.rs"]
+mod tokiort;
 
 static PORT: AtomicU16 = AtomicU16::new(3666);
 

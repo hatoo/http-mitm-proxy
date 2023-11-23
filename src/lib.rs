@@ -25,7 +25,7 @@ pub use hyper;
 pub use tokio_native_tls;
 
 mod tls;
-pub mod tokiort;
+mod tokiort;
 
 #[derive(Clone)]
 pub struct MitmProxy {
