@@ -40,17 +40,14 @@ async fn main() {
     println!();
 
     while let Some(comm) = branch.next().await {
-        match comm.response.await {
-            Ok(mut response) => {
-                println!(
-                    "{}\t{}\t{}\t{}",
-                    comm.client_addr,
-                    comm.request.uri(),
-                    response.status(),
-                    response.body_mut().concat().await.len()
-                );
-            }
-            Err(_) => {}
+        if let Ok(mut response) = comm.response.await {
+            println!(
+                "{}\t{}\t{}\t{}",
+                comm.client_addr,
+                comm.request.uri(),
+                response.status(),
+                response.body_mut().concat().await.len()
+            );
         }
     }
 }

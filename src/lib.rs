@@ -182,7 +182,7 @@ impl MitmProxy {
 
                                     if res.status() == StatusCode::SWITCHING_PROTOCOLS {
                                         tokio::task::spawn(async move {
-                                            match (
+                                            if let (Ok(client), Ok(server)) = (
                                                 hyper::upgrade::on(Request::from_parts(
                                                     req_parts,
                                                     Empty::<Bytes>::new(),
@@ -190,19 +190,16 @@ impl MitmProxy {
                                                 .await,
                                                 hyper::upgrade::on(res_upgrade).await,
                                             ) {
-                                                (Ok(client), Ok(server)) => {
-                                                    let (rx_client, rx_server) = upgrade(
-                                                        TokioIo::new(client),
-                                                        TokioIo::new(server),
-                                                    )
-                                                    .await;
+                                                let (rx_client, rx_server) = upgrade(
+                                                    TokioIo::new(client),
+                                                    TokioIo::new(server),
+                                                )
+                                                .await;
 
-                                                    let _ = upgrade_tx.send(Upgrade {
-                                                        client_to_server: rx_client,
-                                                        server_to_client: rx_server,
-                                                    });
-                                                }
-                                                _ => {}
+                                                let _ = upgrade_tx.send(Upgrade {
+                                                    client_to_server: rx_client,
+                                                    server_to_client: rx_server,
+                                                });
                                             }
                                         });
                                         return Ok::<_, hyper::Error>(res);
@@ -269,20 +266,17 @@ impl MitmProxy {
             // https://developer.mozilla.org/ja/docs/Web/HTTP/Status/101
             if status == StatusCode::SWITCHING_PROTOCOLS {
                 tokio::task::spawn(async move {
-                    match (
+                    if let (Ok(client), Ok(server)) = (
                         hyper::upgrade::on(Request::from_parts(req_parts, Empty::<Bytes>::new()))
                             .await,
                         hyper::upgrade::on(res_upgrade).await,
                     ) {
-                        (Ok(client), Ok(server)) => {
-                            let (rx_client, rx_server) =
-                                upgrade(TokioIo::new(client), TokioIo::new(server)).await;
-                            let _ = upgrade_tx.send(Upgrade {
-                                client_to_server: rx_client,
-                                server_to_client: rx_server,
-                            });
-                        }
-                        _ => {}
+                        let (rx_client, rx_server) =
+                            upgrade(TokioIo::new(client), TokioIo::new(server)).await;
+                        let _ = upgrade_tx.send(Upgrade {
+                            client_to_server: rx_client,
+                            server_to_client: rx_server,
+                        });
                     }
                 });
             }
