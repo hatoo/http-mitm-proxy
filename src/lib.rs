@@ -1,3 +1,5 @@
+#![doc = include_str!("../README.md")]
+
 use bytes::Bytes;
 use futures::{
     channel::mpsc::{UnboundedReceiver, UnboundedSender},
@@ -28,8 +30,12 @@ mod tls;
 mod tokiort;
 
 #[derive(Clone)]
+/// The main struct to run proxy server
 pub struct MitmProxy {
+    /// Root certificate to sign fake certificates. You may need to trust this certificate on client application to use HTTPS.
+    /// If None, proxy will just tunnel HTTPS traffic and will not observe HTTPS traffic.
     pub root_cert: Option<Arc<rcgen::Certificate>>,
+    /// TLS connector to connect from proxy to server.
     pub tls_connector: tokio_native_tls::native_tls::TlsConnector,
 }
 
@@ -45,19 +51,31 @@ impl MitmProxy {
     }
 }
 
+/// Upgraded connection
 pub struct Upgrade {
+    /// Client to server traffic
     pub client_to_server: UnboundedReceiver<Vec<u8>>,
+    /// Server to client traffic
     pub server_to_client: UnboundedReceiver<Vec<u8>>,
 }
 
+/// Communication between client and server
+/// Note: http-mitm-proxy observe Communication basis, not Connection basis. Some Connections may belong to the same connection using keep-alive.
 pub struct Communication {
+    /// Client address
     pub client_addr: std::net::SocketAddr,
+    /// Request from client. request.uri() is an absolute URI.
     pub request: Request<UnboundedReceiver<Vec<u8>>>,
+    /// Response from server. It may fail to receive response when some error occurs. Currently, not way to know the error.
     pub response: futures::channel::oneshot::Receiver<Response<UnboundedReceiver<Vec<u8>>>>,
+    /// Upgraded connection. Proxy will upgrade connection only if response status is 101.
     pub upgrade: futures::channel::oneshot::Receiver<Upgrade>,
 }
 
 impl MitmProxy {
+    /// Bind proxy server to address.
+    /// You can observe communications between client and server by receiving stream.
+    /// To run proxy server, you need to run returned future. This API design give you an ability to cancel proxy server when you want.
     pub async fn bind<A: ToSocketAddrs>(
         &self,
         addr: A,
