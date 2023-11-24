@@ -43,7 +43,7 @@ async fn main() {
 
     /*
         Save this cert to ca.crt and use it with curl like this:
-        curl https://www.google.com -x https://127.0.0.1:3003 --cacert ca.crt
+        curl https://www.google.com -x http://127.0.0.1:3003 --cacert ca.crt
     */
 
     while let Some(comm) = communications.next().await {
