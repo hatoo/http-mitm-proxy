@@ -4,9 +4,10 @@ use std::{
 };
 
 use axum::{
+    headers::UserAgent,
     response::{sse::Event, IntoResponse, Sse},
     routing::get,
-    Router,
+    Router, TypedHeader,
 };
 use axum_server::tls_rustls::RustlsConfig;
 use bytes::Bytes;
@@ -237,6 +238,60 @@ async fn test_simple() {
         .concat()
         .await;
     assert_eq!(String::from_utf8(body).unwrap(), "Hello, World!");
+}
+
+#[tokio::test]
+async fn test_modify_header() {
+    let app = Router::new().route(
+        "/",
+        get(
+            |TypedHeader(user_agent): TypedHeader<UserAgent>| async move { user_agent.to_string() },
+        ),
+    );
+
+    let mut setup = setup(app).await;
+
+    let response = tokio::spawn(
+        setup
+            .client
+            .get(format!("http://127.0.0.1:{}/", setup.server_port))
+            .send(),
+    );
+
+    let mut communication = setup.proxy.next().await.unwrap();
+    let uri = communication.request.uri().clone();
+    let headers = communication.request.headers().clone();
+    communication.request.headers_mut().insert(
+        header::USER_AGENT,
+        header::HeaderValue::from_static("MODIFIED"),
+    );
+    communication
+        .request_back
+        .send(communication.request)
+        .unwrap();
+
+    let response = response.await.unwrap().unwrap();
+
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.bytes().await.unwrap().as_ref(), b"MODIFIED");
+
+    assert_eq!(
+        uri.to_string(),
+        format!("http://127.0.0.1:{}/", setup.server_port)
+    );
+    assert_eq!(
+        headers.get(header::HOST).unwrap(),
+        format!("127.0.0.1:{}", setup.server_port).as_bytes()
+    );
+
+    let body = communication
+        .response
+        .await
+        .unwrap()
+        .body_mut()
+        .concat()
+        .await;
+    assert_eq!(String::from_utf8(body).unwrap(), "MODIFIED");
 }
 
 #[tokio::test]
