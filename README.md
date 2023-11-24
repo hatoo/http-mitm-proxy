@@ -1,5 +1,7 @@
 # http-mitm-proxy
 
+[![Crates.io](https://img.shields.io/crates/v/http-mitm-proxy.svg)](https://crates.io/crates/http-mitm-proxy)
+
 A HTTP proxy server library intended to be a backend of application like Burp proxy.
 
 - Sniff HTTP and HTTPS traffic by signing certificate on the fly.
