@@ -7,11 +7,11 @@ use futures::{
 };
 use http_body_util::{combinators::BoxBody, BodyExt, Empty, StreamBody};
 use hyper::{
-    body::{Frame, Incoming},
+    body::{Body, Frame, Incoming},
     client::{self},
     server::{self},
     service::service_fn,
-    Method, Request, Response, StatusCode,
+    Method, Request, Response, StatusCode, Uri,
 };
 use std::{future::Future, sync::Arc};
 use tls::server_config;
@@ -67,7 +67,9 @@ pub struct Communication {
     /// Client address
     pub client_addr: std::net::SocketAddr,
     /// Request from client. request.uri() is an absolute URI.
-    pub request: Request<UnboundedReceiver<Vec<u8>>>,
+    pub request: Request<Incoming>,
+    ///
+    pub request_back: futures::channel::oneshot::Sender<Request<BoxBody<Bytes, hyper::Error>>>,
     /// Response from server. It may fail to receive response when some error occurs. Currently, not way to know the error.
     pub response: futures::channel::oneshot::Receiver<Response<UnboundedReceiver<Vec<u8>>>>,
     /// Upgraded connection. Proxy will upgrade connection only if response status is 101.
@@ -177,24 +179,37 @@ impl MitmProxy {
                         .title_case_headers(true)
                         .serve_connection(
                             TokioIo::new(client),
-                            service_fn(move |req| {
+                            service_fn(move |mut req| {
                                 let authority = authority.clone();
                                 let sender = sender.clone();
                                 let tx = tx.clone();
 
                                 async move {
-                                    let (req, mut req_middleman, req_parts) = dup_request(req);
-                                    inject_authority(&mut req_middleman, authority);
+                                    let (req_back_tx, req_back_rx) =
+                                        futures::channel::oneshot::channel();
                                     let (res_tx, res_rx) = futures::channel::oneshot::channel();
                                     let (upgrade_tx, upgrade_rx) =
                                         futures::channel::oneshot::channel();
+
+                                    inject_authority(&mut req, authority);
                                     let _ = tx.unbounded_send(Communication {
                                         client_addr,
-                                        request: req_middleman,
+                                        request: req,
+                                        request_back: req_back_tx,
                                         response: res_rx,
                                         upgrade: upgrade_rx,
                                     });
+                                    let Ok(mut req) = req_back_rx.await else {
+                                        return Ok::<_, hyper::Error>(no_body(
+                                            StatusCode::INTERNAL_SERVER_ERROR,
+                                        ));
+                                    };
+                                    let mut parts = req.uri().clone().into_parts();
+                                    parts.scheme = None;
+                                    parts.authority = None;
+                                    *req.uri_mut() = Uri::from_parts(parts).unwrap();
 
+                                    let (req, req_middleman, req_parts) = dup_request(req);
                                     let res = sender.lock().await.send_request(req).await?;
                                     let (res, res_upgrade, res_middleman) = dup_response(res);
 
@@ -265,18 +280,26 @@ impl MitmProxy {
 
             tokio::spawn(conn.with_upgrades());
 
-            let (req, req_middleman, req_parts) = dup_request(req);
-
+            let (req_back_tx, req_back_rx) = futures::channel::oneshot::channel();
             let (res_tx, res_rx) = futures::channel::oneshot::channel();
             let (upgrade_tx, upgrade_rx) = futures::channel::oneshot::channel();
             // Used tokio::spawn above to middle_man can consume rx in request()
             let _ = tx.unbounded_send(Communication {
                 client_addr,
-                request: req_middleman,
+                request: req,
+                request_back: req_back_tx,
                 response: res_rx,
                 upgrade: upgrade_rx,
             });
+            let Ok(mut req) = req_back_rx.await else {
+                return Ok::<_, hyper::Error>(no_body(StatusCode::INTERNAL_SERVER_ERROR));
+            };
+            let mut parts = req.uri().clone().into_parts();
+            parts.scheme = None;
+            parts.authority = None;
+            *req.uri_mut() = Uri::from_parts(parts).unwrap();
 
+            let (req, req_middleman, req_parts) = dup_request(req);
             let res = sender.send_request(req).await?;
             let status = res.status();
             let (res, res_upgrade, res_middleman) = dup_response(res);
@@ -311,10 +334,7 @@ fn no_body(status: StatusCode) -> Response<BoxBody<Bytes, hyper::Error>> {
     res
 }
 
-fn inject_authority(
-    request_middleman: &mut Request<UnboundedReceiver<Vec<u8>>>,
-    authority: hyper::http::uri::Authority,
-) {
+fn inject_authority<B>(request_middleman: &mut Request<B>, authority: hyper::http::uri::Authority) {
     let mut parts = request_middleman.uri().clone().into_parts();
     parts.scheme = Some(hyper::http::uri::Scheme::HTTPS);
     parts.authority = Some(authority);
@@ -362,8 +382,8 @@ async fn upgrade<
     (rx_client, rx_server)
 }
 
-fn dup_request(
-    req: Request<hyper::body::Incoming>,
+fn dup_request<B: Body<Data = Bytes, Error = hyper::Error> + Unpin>(
+    req: Request<B>,
 ) -> (
     Request<StreamBody<impl Stream<Item = Result<Frame<Bytes>, hyper::Error>>>>,
     Request<UnboundedReceiver<Vec<u8>>>,
@@ -397,8 +417,8 @@ fn dup_response(
     )
 }
 
-fn dup_body(
-    body: Incoming,
+fn dup_body<B: Body<Data = Bytes, Error = hyper::Error> + Unpin>(
+    body: B,
 ) -> (
     StreamBody<impl Stream<Item = Result<Frame<Bytes>, hyper::Error>>>,
     UnboundedReceiver<Vec<u8>>,

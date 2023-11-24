@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use futures::StreamExt;
+use http_body_util::BodyExt;
 use http_mitm_proxy::MitmProxy;
 
 fn make_root_cert() -> rcgen::Certificate {
@@ -47,11 +48,17 @@ async fn main() {
     */
 
     while let Some(comm) = communications.next().await {
+        let uri = comm.request.uri().clone();
+        let (parts, body) = comm.request.into_parts();
+
+        comm.request_back
+            .send(hyper::Request::from_parts(parts, body.boxed()))
+            .unwrap();
         if let Ok(mut response) = comm.response.await {
             println!(
                 "{}\t{}\t{}\t{}",
                 comm.client_addr,
-                comm.request.uri(),
+                uri,
                 response.status(),
                 response.body_mut().concat().await.len()
             );
