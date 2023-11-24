@@ -1,7 +1,13 @@
 [package]
 name = "http-mitm-proxy"
 version = "0.1.0"
+description = "A HTTP proxy server library that can observe HTTP requests and responses on top of hyper."
 edition = "2021"
+
+authors = ["hatoo <hato2000@gmail.com>"]
+license = "MIT"
+categories = ["network-programming", "web-programming::http-server"]
+keywords = ["http", "proxy", "http-proxy"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
