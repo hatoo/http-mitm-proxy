@@ -33,6 +33,7 @@ mod tokiort;
 /// The main struct to run proxy server
 pub struct MitmProxy {
     /// Root certificate to sign fake certificates. You may need to trust this certificate on client application to use HTTPS.
+    ///
     /// If None, proxy will just tunnel HTTPS traffic and will not observe HTTPS traffic.
     pub root_cert: Option<Arc<rcgen::Certificate>>,
     /// TLS connector to connect from proxy to server.
@@ -59,8 +60,9 @@ pub struct Upgrade {
     pub server_to_client: UnboundedReceiver<Vec<u8>>,
 }
 
-/// Communication between client and server
-/// Note: http-mitm-proxy observe Communication basis, not Connection basis. Some Connections may belong to the same connection using keep-alive.
+/// Communication between client and server.
+///
+/// Note: http-mitm-proxy observe by Communication basis, not Connection basis. Some Connections may belong to the same connection using keep-alive.
 pub struct Communication {
     /// Client address
     pub client_addr: std::net::SocketAddr,
