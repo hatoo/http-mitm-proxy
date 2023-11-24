@@ -24,7 +24,9 @@ async fn main() {
     let root_cert = Arc::new(make_root_cert());
 
     let proxy = MitmProxy::new(
+        // This is the root cert that will be used to sign the fake certificates
         Some(root_cert.clone()),
+        // This is the connector that will be used to connect to the upstream server from proxy
         tokio_native_tls::native_tls::TlsConnector::new().unwrap(),
     );
 
@@ -38,6 +40,11 @@ async fn main() {
     println!();
     println!("{}", root_cert.serialize_pem().unwrap());
     println!();
+
+    /*
+        Save this cert to ca.crt and use it with curl like this:
+        curl https://www.google.com -x https://127.0.0.1:3003 --cacert ca.crt
+    */
 
     while let Some(comm) = communications.next().await {
         if let Ok(mut response) = comm.response.await {
