@@ -63,13 +63,13 @@ pub struct Upgrade {
 /// Communication between client and server.
 ///
 /// Note: http-mitm-proxy observe by Communication basis, not Connection basis. Some Connections may belong to the same connection using keep-alive.
-pub struct Communication {
+pub struct Communication<B> {
     /// Client address
     pub client_addr: std::net::SocketAddr,
     /// Request from client. request.uri() is an absolute URI.
     pub request: Request<Incoming>,
-    ///
-    pub request_back: futures::channel::oneshot::Sender<Request<BoxBody<Bytes, hyper::Error>>>,
+    /// Send request back to server. You can modify request before sending it back.
+    pub request_back: futures::channel::oneshot::Sender<Request<B>>,
     /// Response from server. It may fail to receive response when some error occurs. Currently, not way to know the error.
     pub response: futures::channel::oneshot::Receiver<Response<UnboundedReceiver<Vec<u8>>>>,
     /// Upgraded connection. Proxy will upgrade connection only if response status is 101.
@@ -80,10 +80,20 @@ impl MitmProxy {
     /// Bind proxy server to address.
     /// You can observe communications between client and server by receiving stream.
     /// To run proxy server, you need to run returned future. This API design give you an ability to cancel proxy server when you want.
-    pub async fn bind<A: ToSocketAddrs>(
+    pub async fn bind<A: ToSocketAddrs, B>(
         &self,
         addr: A,
-    ) -> Result<(impl Stream<Item = Communication>, impl Future<Output = ()>), std::io::Error> {
+    ) -> Result<
+        (
+            impl Stream<Item = Communication<B>>,
+            impl Future<Output = ()>,
+        ),
+        std::io::Error,
+    >
+    where
+        B: Body<Data = Bytes> + Send + 'static,
+        B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+    {
         let listener = TcpListener::bind(addr).await?;
         let (tx, rx) = futures::channel::mpsc::unbounded();
 
@@ -105,12 +115,15 @@ impl MitmProxy {
         Ok((rx, serve))
     }
 
-    async fn handle(
+    async fn handle<B>(
         &self,
         stream: tokio::net::TcpStream,
-        tx: UnboundedSender<Communication>,
+        tx: UnboundedSender<Communication<B>>,
         client_addr: std::net::SocketAddr,
-    ) {
+    ) where
+        B: Body<Data = Bytes> + Send + 'static,
+        B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+    {
         let _ = server::conn::http1::Builder::new()
             .preserve_header_case(true)
             .title_case_headers(true)
@@ -122,12 +135,16 @@ impl MitmProxy {
             .await;
     }
 
-    async fn proxy(
+    async fn proxy<B>(
         &self,
         req: Request<hyper::body::Incoming>,
-        tx: UnboundedSender<Communication>,
+        tx: UnboundedSender<Communication<B>>,
         client_addr: std::net::SocketAddr,
-    ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Error> {
+    ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Error>
+    where
+        B: Body<Data = Bytes> + Send + 'static,
+        B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+    {
         if req.method() == Method::CONNECT {
             let proxy = self.clone();
             tokio::spawn(async move {
@@ -204,12 +221,9 @@ impl MitmProxy {
                                             StatusCode::INTERNAL_SERVER_ERROR,
                                         ));
                                     };
-                                    let mut parts = req.uri().clone().into_parts();
-                                    parts.scheme = None;
-                                    parts.authority = None;
-                                    *req.uri_mut() = Uri::from_parts(parts).unwrap();
+                                    remove_authority(&mut req);
 
-                                    let (req, req_middleman, req_parts) = dup_request(req);
+                                    let (req, req_parts) = dup_request(req);
                                     let res = sender.lock().await.send_request(req).await?;
                                     let (res, res_upgrade, res_middleman) = dup_response(res);
 
@@ -294,12 +308,9 @@ impl MitmProxy {
             let Ok(mut req) = req_back_rx.await else {
                 return Ok::<_, hyper::Error>(no_body(StatusCode::INTERNAL_SERVER_ERROR));
             };
-            let mut parts = req.uri().clone().into_parts();
-            parts.scheme = None;
-            parts.authority = None;
-            *req.uri_mut() = Uri::from_parts(parts).unwrap();
+            remove_authority(&mut req);
 
-            let (req, req_middleman, req_parts) = dup_request(req);
+            let (req, req_parts) = dup_request(req);
             let res = sender.send_request(req).await?;
             let status = res.status();
             let (res, res_upgrade, res_middleman) = dup_response(res);
@@ -339,6 +350,13 @@ fn inject_authority<B>(request_middleman: &mut Request<B>, authority: hyper::htt
     parts.scheme = Some(hyper::http::uri::Scheme::HTTPS);
     parts.authority = Some(authority);
     *request_middleman.uri_mut() = hyper::http::uri::Uri::from_parts(parts).unwrap();
+}
+
+fn remove_authority<B>(req: &mut Request<B>) {
+    let mut parts = req.uri().clone().into_parts();
+    parts.scheme = None;
+    parts.authority = None;
+    *req.uri_mut() = Uri::from_parts(parts).unwrap();
 }
 
 async fn upgrade<
@@ -382,21 +400,14 @@ async fn upgrade<
     (rx_client, rx_server)
 }
 
-fn dup_request<B: Body<Data = Bytes, Error = hyper::Error> + Unpin>(
-    req: Request<B>,
-) -> (
-    Request<StreamBody<impl Stream<Item = Result<Frame<Bytes>, hyper::Error>>>>,
-    Request<UnboundedReceiver<Vec<u8>>>,
-    hyper::http::request::Parts,
-) {
+fn dup_request<B>(req: Request<B>) -> (Request<B>, hyper::http::request::Parts)
+where
+    B: Body<Data = Bytes> + 'static,
+    B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+{
     let (parts, body) = req.into_parts();
-    let (body, rx) = dup_body(body);
 
-    (
-        Request::from_parts(parts.clone(), StreamBody::new(body)),
-        Request::from_parts(parts.clone(), rx),
-        parts,
-    )
+    (Request::from_parts(parts.clone(), body), parts)
 }
 
 #[allow(clippy::type_complexity)]
@@ -417,12 +428,16 @@ fn dup_response(
     )
 }
 
-fn dup_body<B: Body<Data = Bytes, Error = hyper::Error> + Unpin>(
+fn dup_body<B>(
     body: B,
 ) -> (
-    StreamBody<impl Stream<Item = Result<Frame<Bytes>, hyper::Error>>>,
+    StreamBody<impl Stream<Item = Result<Frame<Bytes>, B::Error>>>,
     UnboundedReceiver<Vec<u8>>,
-) {
+)
+where
+    B: Body<Data = Bytes> + Unpin + 'static,
+    B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+{
     let (tx, rx) = futures::channel::mpsc::unbounded();
     let body = futures::stream::unfold((body, tx), |(mut body, tx)| async move {
         if let Some(frame) = body.frame().await {
