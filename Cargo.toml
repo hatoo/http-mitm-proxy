@@ -2,6 +2,8 @@
 name = "http-mitm-proxy"
 version = "0.1.0"
 description = "A HTTP proxy server library that can observe HTTP requests and responses on top of hyper."
+readme = "README.md"
+repository = "https://github.com/hatoo/http-mitm-proxy"
 edition = "2021"
 
 authors = ["hatoo <hato2000@gmail.com>"]
