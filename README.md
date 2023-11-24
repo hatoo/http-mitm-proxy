@@ -16,7 +16,7 @@ A HTTP proxy server library intended to be a backend of application like Burp pr
 
 ## Usage
 
-```rust
+```rust:no_run
 use std::sync::Arc;
 
 use futures::StreamExt;

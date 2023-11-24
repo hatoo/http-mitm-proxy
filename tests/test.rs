@@ -293,7 +293,7 @@ async fn test_sse() {
 #[tokio::test]
 async fn test_upgrade() {
     let app = Router::new().route("/upgrade", get(upgrade_handler));
-    let setup = setup(app).await;
+    let mut setup = setup(app).await;
 
     let res = setup
         .client
@@ -304,11 +304,19 @@ async fn test_upgrade() {
         .await
         .unwrap();
 
+    let comm = setup.proxy.next().await.unwrap();
+
     let mut stream = res.upgrade().await.unwrap();
     let mut buf = [0u8; 4];
     stream.read_exact(&mut buf).await.unwrap();
     assert_eq!(&buf, b"ping");
     stream.write_all(b"pong").await.unwrap();
+    drop(stream);
+
+    let upgrade = comm.upgrade.await.unwrap();
+
+    assert_eq!(upgrade.server_to_client.concat().await, b"ping");
+    assert_eq!(upgrade.client_to_server.concat().await, b"pong");
 }
 
 async fn upgrade_handler<B: Send + 'static>(req: axum::http::Request<B>) -> impl IntoResponse {
@@ -455,7 +463,7 @@ async fn test_tls_sse() {
 #[tokio::test]
 async fn test_tls_upgrade() {
     let app = Router::new().route("/upgrade", get(upgrade_handler));
-    let setup = setup_tls(app, false).await;
+    let mut setup = setup_tls(app, false).await;
 
     let res = setup
         .client
@@ -466,9 +474,17 @@ async fn test_tls_upgrade() {
         .await
         .unwrap();
 
+    let comm = setup.proxy.next().await.unwrap();
+
     let mut stream = res.upgrade().await.unwrap();
     let mut buf = [0u8; 4];
     stream.read_exact(&mut buf).await.unwrap();
     assert_eq!(&buf, b"ping");
     stream.write_all(b"pong").await.unwrap();
+    drop(stream);
+
+    let upgrade = comm.upgrade.await.unwrap();
+
+    assert_eq!(upgrade.server_to_client.concat().await, b"ping");
+    assert_eq!(upgrade.client_to_server.concat().await, b"pong");
 }
