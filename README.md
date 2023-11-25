@@ -68,7 +68,7 @@ async fn main() {
     while let Some(comm) = communications.next().await {
         let uri = comm.request.uri().clone();
         // modify the request here if you want
-        comm.request_back.send(comm.request).unwrap();
+        let _ = comm.request_back.send(comm.request);
         if let Ok(mut response) = comm.response.await {
             println!(
                 "{}\t{}\t{}\t{}",
