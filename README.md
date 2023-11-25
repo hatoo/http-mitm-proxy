@@ -10,8 +10,6 @@ A HTTP proxy server library intended to be a backend of application like Burp pr
 
 ## TODO
 
-- [ ] Intercepting traffic
-    - Ability to stop and modify requests
 - [ ] WebSocket parser
 
 ## Usage
