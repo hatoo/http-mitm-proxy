@@ -69,10 +69,11 @@ pub struct Communication<B> {
     /// Request from client. request.uri() is an absolute URI.
     pub request: Request<Incoming>,
     /// Send request back to server. You can modify request before sending it back.
+    /// NOTE: If you drop this without send(), communication will be canceled and server will not receive request and connection will be closed.
     pub request_back: futures::channel::oneshot::Sender<Request<B>>,
     /// Response from server. It may fail to receive response when some error occurs. Currently, not way to know the error.
     pub response: futures::channel::oneshot::Receiver<Response<UnboundedReceiver<Vec<u8>>>>,
-    /// Upgraded connection. Proxy will upgrade connection only if response status is 101.
+    /// Upgraded connection. Proxy will upgrade connection if and only if response status is 101.
     pub upgrade: futures::channel::oneshot::Receiver<Upgrade>,
 }
 
