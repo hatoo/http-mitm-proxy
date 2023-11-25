@@ -6,11 +6,7 @@ A HTTP proxy server library intended to be a backend of application like Burp pr
 
 - Sniff HTTP and HTTPS traffic by signing certificate on the fly.
 - Server Sent Event
-- WebSocket ("raw" traffic only. Parsers are not implemented yet.)
-
-## TODO
-
-- [ ] WebSocket parser
+- WebSocket ("raw" traffic only. Parsers will not be implemented in this crate.)
 
 ## Usage
 
