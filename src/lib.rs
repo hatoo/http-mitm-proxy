@@ -62,7 +62,7 @@ pub struct Upgrade {
 
 /// Communication between client and server.
 ///
-/// Note: http-mitm-proxy observe by Communication basis, not Connection basis. Some Connections may belong to the same connection using keep-alive.
+/// Note: http-mitm-proxy observe by Communication basis, not Connection basis. Some Communications may belong to the same connection using keep-alive.
 pub struct Communication<B> {
     /// Client address
     pub client_addr: std::net::SocketAddr,
