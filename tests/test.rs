@@ -4,17 +4,22 @@ use std::{
 };
 
 use axum::{
+    headers::UserAgent,
     response::{sse::Event, IntoResponse, Sse},
     routing::get,
-    Router,
+    Router, TypedHeader,
 };
 use axum_server::tls_rustls::RustlsConfig;
+use bytes::Bytes;
 use futures::{
     stream::{self, BoxStream},
     StreamExt,
 };
 use http_mitm_proxy::Communication;
-use hyper::header;
+use hyper::{
+    body::{Body, Incoming},
+    header,
+};
 use rcgen::generate_simple_self_signed;
 use reqwest::Client;
 use rustls::ServerConfig;
@@ -83,14 +88,18 @@ fn client(proxy_port: u16) -> reqwest::Client {
         .unwrap()
 }
 
-struct Setup {
+struct Setup<B> {
     _proxy_port: u16,
     server_port: u16,
-    proxy: BoxStream<'static, Communication>,
+    proxy: BoxStream<'static, Communication<B>>,
     client: Client,
 }
 
-async fn setup(app: Router) -> Setup {
+async fn setup<B>(app: Router) -> Setup<B>
+where
+    B: Body<Data = Bytes> + Send + 'static,
+    B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+{
     let (server_port, server) = bind_app(app).await;
 
     tokio::spawn(server);
@@ -131,7 +140,11 @@ fn root_cert() -> rcgen::Certificate {
     rcgen::Certificate::from_params(param).unwrap()
 }
 
-async fn setup_tls(app: Router, without_cert: bool) -> Setup {
+async fn setup_tls<B>(app: Router, without_cert: bool) -> Setup<B>
+where
+    B: Body<Data = Bytes> + Send + 'static,
+    B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+{
     let (server_port, server) = bind_app_tls(app).await;
 
     tokio::spawn(server);
@@ -188,24 +201,32 @@ async fn test_simple() {
 
     let mut setup = setup(app).await;
 
-    let response = setup
-        .client
-        .get(format!("http://127.0.0.1:{}/", setup.server_port))
-        .send()
-        .await
+    let response = tokio::spawn(
+        setup
+            .client
+            .get(format!("http://127.0.0.1:{}/", setup.server_port))
+            .send(),
+    );
+
+    let communication = setup.proxy.next().await.unwrap();
+    let uri = communication.request.uri().clone();
+    let headers = communication.request.headers().clone();
+    communication
+        .request_back
+        .send(communication.request)
         .unwrap();
+
+    let response = response.await.unwrap().unwrap();
 
     assert_eq!(response.status(), 200);
     assert_eq!(response.bytes().await.unwrap().as_ref(), b"Hello, World!");
 
-    let communication = setup.proxy.next().await.unwrap();
-
     assert_eq!(
-        communication.request.uri().to_string(),
+        uri.to_string(),
         format!("http://127.0.0.1:{}/", setup.server_port)
     );
     assert_eq!(
-        communication.request.headers().get(header::HOST).unwrap(),
+        headers.get(header::HOST).unwrap(),
         format!("127.0.0.1:{}", setup.server_port).as_bytes()
     );
 
@@ -220,6 +241,60 @@ async fn test_simple() {
 }
 
 #[tokio::test]
+async fn test_modify_header() {
+    let app = Router::new().route(
+        "/",
+        get(
+            |TypedHeader(user_agent): TypedHeader<UserAgent>| async move { user_agent.to_string() },
+        ),
+    );
+
+    let mut setup = setup(app).await;
+
+    let response = tokio::spawn(
+        setup
+            .client
+            .get(format!("http://127.0.0.1:{}/", setup.server_port))
+            .send(),
+    );
+
+    let mut communication = setup.proxy.next().await.unwrap();
+    let uri = communication.request.uri().clone();
+    let headers = communication.request.headers().clone();
+    communication.request.headers_mut().insert(
+        header::USER_AGENT,
+        header::HeaderValue::from_static("MODIFIED"),
+    );
+    communication
+        .request_back
+        .send(communication.request)
+        .unwrap();
+
+    let response = response.await.unwrap().unwrap();
+
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.bytes().await.unwrap().as_ref(), b"MODIFIED");
+
+    assert_eq!(
+        uri.to_string(),
+        format!("http://127.0.0.1:{}/", setup.server_port)
+    );
+    assert_eq!(
+        headers.get(header::HOST).unwrap(),
+        format!("127.0.0.1:{}", setup.server_port).as_bytes()
+    );
+
+    let body = communication
+        .response
+        .await
+        .unwrap()
+        .body_mut()
+        .concat()
+        .await;
+    assert_eq!(String::from_utf8(body).unwrap(), "MODIFIED");
+}
+
+#[tokio::test]
 async fn test_keep_alive() {
     let app = Router::new().route("/", get(|| async { "Hello, World!" }));
 
@@ -227,21 +302,27 @@ async fn test_keep_alive() {
 
     // reqwest wii use single connection with keep-alive
     for _ in 0..16 {
-        setup
-            .client
-            .get(format!("http://127.0.0.1:{}/", setup.server_port))
-            .send()
-            .await
-            .unwrap();
+        tokio::spawn(
+            setup
+                .client
+                .get(format!("http://127.0.0.1:{}/", setup.server_port))
+                .send(),
+        );
 
         let communication = setup.proxy.next().await.unwrap();
+        let uri = communication.request.uri().clone();
+        let headers = communication.request.headers().clone();
+        communication
+            .request_back
+            .send(communication.request)
+            .unwrap();
 
         assert_eq!(
-            communication.request.uri().to_string(),
+            uri.to_string(),
             format!("http://127.0.0.1:{}/", setup.server_port)
         );
         assert_eq!(
-            communication.request.headers().get(header::HOST).unwrap(),
+            headers.get(header::HOST).unwrap(),
             format!("127.0.0.1:{}", setup.server_port).as_bytes()
         );
 
@@ -268,14 +349,18 @@ async fn test_sse() {
     );
 
     let mut setup = setup(app).await;
-    setup
-        .client
-        .get(format!("http://127.0.0.1:{}/sse", setup.server_port))
-        .send()
-        .await
-        .unwrap();
+    tokio::spawn(
+        setup
+            .client
+            .get(format!("http://127.0.0.1:{}/sse", setup.server_port))
+            .send(),
+    );
 
     let communication = setup.proxy.next().await.unwrap();
+    communication
+        .request_back
+        .send(communication.request)
+        .unwrap();
     let body = communication
         .response
         .await
@@ -295,18 +380,19 @@ async fn test_upgrade() {
     let app = Router::new().route("/upgrade", get(upgrade_handler));
     let mut setup = setup(app).await;
 
-    let res = setup
-        .client
-        .get(format!("http://127.0.0.1:{}/upgrade", setup.server_port))
-        .header(axum::http::header::UPGRADE, "raw")
-        .header(axum::http::header::CONNECTION, "Upgrade")
-        .send()
-        .await
-        .unwrap();
+    let res = tokio::spawn(
+        setup
+            .client
+            .get(format!("http://127.0.0.1:{}/upgrade", setup.server_port))
+            .header(axum::http::header::UPGRADE, "raw")
+            .header(axum::http::header::CONNECTION, "Upgrade")
+            .send(),
+    );
 
     let comm = setup.proxy.next().await.unwrap();
+    comm.request_back.send(comm.request).unwrap();
 
-    let mut stream = res.upgrade().await.unwrap();
+    let mut stream = res.await.unwrap().unwrap().upgrade().await.unwrap();
     let mut buf = [0u8; 4];
     stream.read_exact(&mut buf).await.unwrap();
     assert_eq!(&buf, b"ping");
@@ -341,24 +427,31 @@ async fn test_tls_simple() {
 
     let mut setup = setup_tls(app, false).await;
 
-    let response = setup
-        .client
-        .get(format!("https://127.0.0.1:{}/", setup.server_port))
-        .send()
-        .await
+    let response = tokio::spawn(
+        setup
+            .client
+            .get(format!("https://127.0.0.1:{}/", setup.server_port))
+            .send(),
+    );
+    let communication = setup.proxy.next().await.unwrap();
+    let uri = communication.request.uri().clone();
+    let headers = communication.request.headers().clone();
+    communication
+        .request_back
+        .send(communication.request)
         .unwrap();
+
+    let response = response.await.unwrap().unwrap();
 
     assert_eq!(response.status(), 200);
     assert_eq!(response.bytes().await.unwrap().as_ref(), b"Hello, World!");
 
-    let communication = setup.proxy.next().await.unwrap();
-
     assert_eq!(
-        communication.request.uri().to_string(),
+        uri.to_string(),
         format!("https://127.0.0.1:{}/", setup.server_port)
     );
     assert_eq!(
-        communication.request.headers().get(header::HOST).unwrap(),
+        headers.get(header::HOST).unwrap(),
         format!("127.0.0.1:{}", setup.server_port).as_bytes()
     );
 
@@ -376,15 +469,16 @@ async fn test_tls_simple() {
 async fn test_tls_simple_tunnel() {
     let app = Router::new().route("/", get(|| async { "Hello, World!" }));
 
-    let setup = setup_tls(app, true).await;
+    let setup: Setup<Incoming> = setup_tls(app, true).await;
 
-    let response = setup
-        .client
-        .get(format!("https://127.0.0.1:{}/", setup.server_port))
-        .send()
-        .await
-        .unwrap();
+    let response = tokio::spawn(
+        setup
+            .client
+            .get(format!("https://127.0.0.1:{}/", setup.server_port))
+            .send(),
+    );
 
+    let response = response.await.unwrap().unwrap();
     assert_eq!(response.status(), 200);
     assert_eq!(response.bytes().await.unwrap().as_ref(), b"Hello, World!");
 }
@@ -397,21 +491,27 @@ async fn test_tls_keep_alive() {
 
     // reqwest wii use single connection with keep-alive
     for _ in 0..16 {
-        setup
-            .client
-            .get(format!("https://127.0.0.1:{}/", setup.server_port))
-            .send()
-            .await
-            .unwrap();
+        tokio::spawn(
+            setup
+                .client
+                .get(format!("https://127.0.0.1:{}/", setup.server_port))
+                .send(),
+        );
 
         let communication = setup.proxy.next().await.unwrap();
+        let uri = communication.request.uri().clone();
+        let headers = communication.request.headers().clone();
+        communication
+            .request_back
+            .send(communication.request)
+            .unwrap();
 
         assert_eq!(
-            communication.request.uri().to_string(),
+            uri.to_string(),
             format!("https://127.0.0.1:{}/", setup.server_port)
         );
         assert_eq!(
-            communication.request.headers().get(header::HOST).unwrap(),
+            headers.get(header::HOST).unwrap(),
             format!("127.0.0.1:{}", setup.server_port).as_bytes()
         );
 
@@ -438,14 +538,18 @@ async fn test_tls_sse() {
     );
 
     let mut setup = setup_tls(app, false).await;
-    setup
-        .client
-        .get(format!("https://127.0.0.1:{}/sse", setup.server_port))
-        .send()
-        .await
-        .unwrap();
+    tokio::spawn(
+        setup
+            .client
+            .get(format!("https://127.0.0.1:{}/sse", setup.server_port))
+            .send(),
+    );
 
     let communication = setup.proxy.next().await.unwrap();
+    communication
+        .request_back
+        .send(communication.request)
+        .unwrap();
     let body = communication
         .response
         .await
@@ -465,17 +569,19 @@ async fn test_tls_upgrade() {
     let app = Router::new().route("/upgrade", get(upgrade_handler));
     let mut setup = setup_tls(app, false).await;
 
-    let res = setup
-        .client
-        .get(format!("https://127.0.0.1:{}/upgrade", setup.server_port))
-        .header(axum::http::header::UPGRADE, "raw")
-        .header(axum::http::header::CONNECTION, "Upgrade")
-        .send()
-        .await
-        .unwrap();
+    let res = tokio::spawn(
+        setup
+            .client
+            .get(format!("https://127.0.0.1:{}/upgrade", setup.server_port))
+            .header(axum::http::header::UPGRADE, "raw")
+            .header(axum::http::header::CONNECTION, "Upgrade")
+            .send(),
+    );
 
     let comm = setup.proxy.next().await.unwrap();
+    comm.request_back.send(comm.request).unwrap();
 
+    let res = res.await.unwrap().unwrap();
     let mut stream = res.upgrade().await.unwrap();
     let mut buf = [0u8; 4];
     stream.read_exact(&mut buf).await.unwrap();
