@@ -47,19 +47,17 @@ async fn main() {
     */
 
     while let Some(comm) = communications.next().await {
-        tokio::spawn(async move {
-            let uri = comm.request.uri().clone();
-            // modify the request here if you want
-            comm.request_back.send(comm.request).unwrap();
-            if let Ok(mut response) = comm.response.await {
-                println!(
-                    "{}\t{}\t{}\t{}",
-                    comm.client_addr,
-                    uri,
-                    response.status(),
-                    response.body_mut().concat().await.len()
-                );
-            }
-        });
+        let uri = comm.request.uri().clone();
+        // modify the request here if you want
+        comm.request_back.send(comm.request).unwrap();
+        if let Ok(mut response) = comm.response.await {
+            println!(
+                "{}\t{}\t{}\t{}",
+                comm.client_addr,
+                uri,
+                response.status(),
+                response.body_mut().concat().await.len()
+            );
+        }
     }
 }
