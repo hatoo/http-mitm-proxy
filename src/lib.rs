@@ -147,6 +147,8 @@ impl MitmProxy {
         B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
     {
         if req.method() == Method::CONNECT {
+            // HTTPS connection
+            // This request itself will not be reported as `Communication`
             let proxy = self.clone();
             tokio::spawn(async move {
                 let uri = req.uri().clone();
