@@ -69,7 +69,7 @@ pub struct Communication<B> {
     /// Request from client. request.uri() is an absolute URI.
     pub request: Request<Incoming>,
     /// Send request back to server. You can modify request before sending it back.
-    /// NOTE: If you drop this without send(), communication will be canceled and server will not receive request and connection will be closed.
+    /// NOTE: If you drop this without send(), communication will be canceled and server will not receive request and client will get 500 Internal Server Error.
     pub request_back: futures::channel::oneshot::Sender<Request<B>>,
     /// Response from server. It may fail to receive response when some error occurs. Currently, not way to know the error.
     pub response: futures::channel::oneshot::Receiver<Response<UnboundedReceiver<Vec<u8>>>>,
@@ -125,7 +125,7 @@ impl MitmProxy {
         B: Body<Data = Bytes> + Send + 'static,
         B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
     {
-        let _ = server::conn::http1::Builder::new()
+        if let Err(err) = server::conn::http1::Builder::new()
             .preserve_header_case(true)
             .title_case_headers(true)
             .serve_connection(
@@ -133,7 +133,10 @@ impl MitmProxy {
                 service_fn(|req| self.proxy(req, tx.clone(), client_addr)),
             )
             .with_upgrades()
-            .await;
+            .await
+        {
+            tracing::error!("Error in proxy: {}", err);
+        }
     }
 
     async fn proxy<B>(
@@ -149,36 +152,43 @@ impl MitmProxy {
         if req.method() == Method::CONNECT {
             // HTTPS connection
             // This request itself will not be reported as `Communication`
+            let uri = req.uri().clone();
+            let Some(authority) = uri.authority().cloned() else {
+                tracing::error!("Bad CONNECT request: {}, Reason: Invalid Authority", uri);
+                return Ok(no_body(StatusCode::BAD_REQUEST));
+            };
+            let Some(host) = uri.host().map(str::to_string) else {
+                tracing::error!("Bad CONNECT request: {}, Reason: Invalid Host", uri);
+                return Ok(no_body(StatusCode::BAD_REQUEST));
+            };
             let proxy = self.clone();
             tokio::spawn(async move {
-                let uri = req.uri().clone();
-                let Some(authority) = uri.authority() else {
-                    return;
-                };
-                let Some(host) = uri.host() else {
-                    return;
-                };
                 let Ok(client) = hyper::upgrade::on(req).await else {
+                    tracing::error!("Bad CONNECT request: {}, Reason: Invalid Upgrade", uri);
                     return;
                 };
 
                 if let Some(root_cert) = proxy.root_cert.as_ref() {
                     let Ok(server_config) = server_config(host.to_string(), root_cert) else {
+                        tracing::error!("Failed to create server config for {}", host);
                         return;
                     };
                     // TODO: Cache server_config
                     let server_config = Arc::new(server_config);
                     let tls_acceptor = tokio_rustls::TlsAcceptor::from(server_config);
                     let Ok(client) = tls_acceptor.accept(TokioIo::new(client)).await else {
+                        tracing::error!("Failed to accept TLS connection for {}", host);
                         return;
                     };
 
                     let Ok(server) = TcpStream::connect(authority.as_str()).await else {
+                        tracing::error!("Failed to connect to {}", authority);
                         return;
                     };
                     let native_tls_connector = proxy.tls_connector.clone();
                     let connector = tokio_native_tls::TlsConnector::from(native_tls_connector);
-                    let Ok(server) = connector.connect(host, server).await else {
+                    let Ok(server) = connector.connect(&host, server).await else {
+                        tracing::error!("Failed to handshake TLS to {}", host);
                         return;
                     };
                     let Ok((sender, conn)) = client::conn::http1::Builder::new()
@@ -187,6 +197,7 @@ impl MitmProxy {
                         .handshake(TokioIo::new(server))
                         .await
                     else {
+                        tracing::error!("Failed to handshake HTTP to {}", host);
                         return;
                     };
 
@@ -220,6 +231,7 @@ impl MitmProxy {
                                         upgrade: upgrade_rx,
                                     });
                                     let Ok(mut req) = req_back_rx.await else {
+                                        tracing::info!("Request canceled");
                                         return Ok::<_, hyper::Error>(no_body(
                                             StatusCode::INTERNAL_SERVER_ERROR,
                                         ));
@@ -252,6 +264,10 @@ impl MitmProxy {
                                                     client_to_server: rx_client,
                                                     server_to_client: rx_server,
                                                 });
+                                            } else {
+                                                tracing::error!(
+                                                    "Failed to upgrade connection (HTTPS)"
+                                                );
                                             }
                                         });
                                         return Ok::<_, hyper::Error>(res);
@@ -267,6 +283,7 @@ impl MitmProxy {
                     let Ok(mut server) =
                         TcpStream::connect(uri.authority().unwrap().as_str()).await
                     else {
+                        tracing::error!("Failed to connect to {}", uri.authority().unwrap());
                         return;
                     };
                     let _ =
@@ -281,11 +298,13 @@ impl MitmProxy {
             ))
         } else {
             let Some(host) = req.uri().host() else {
+                tracing::error!("Bad request: {}, Reason: Invalid Host", req.uri());
                 return Ok(no_body(StatusCode::BAD_REQUEST));
             };
             let port = req.uri().port_u16().unwrap_or(80);
 
             let Ok(stream) = TcpStream::connect((host, port)).await else {
+                tracing::error!("Failed to connect to {}", req.uri());
                 return Ok(no_body(StatusCode::BAD_GATEWAY));
             };
 
@@ -309,6 +328,7 @@ impl MitmProxy {
                 upgrade: upgrade_rx,
             });
             let Ok(mut req) = req_back_rx.await else {
+                tracing::info!("Request canceled");
                 return Ok::<_, hyper::Error>(no_body(StatusCode::INTERNAL_SERVER_ERROR));
             };
             remove_authority(&mut req);
@@ -334,6 +354,8 @@ impl MitmProxy {
                             client_to_server: rx_client,
                             server_to_client: rx_server,
                         });
+                    } else {
+                        tracing::error!("Failed to upgrade connection (HTTP)");
                     }
                 });
             }
