@@ -13,6 +13,7 @@ use hyper::{
     service::service_fn,
     Method, Request, Response, StatusCode, Uri,
 };
+use hyper_util::rt::TokioIo;
 use std::{future::Future, sync::Arc};
 use tls::server_config;
 use tokio::{
@@ -20,15 +21,12 @@ use tokio::{
     net::{TcpListener, TcpStream, ToSocketAddrs},
     sync::Mutex,
 };
-use tokiort::TokioIo;
 
 pub use futures;
 pub use hyper;
 pub use tokio_native_tls;
 
 mod tls;
-mod tokiort;
-
 #[derive(Clone)]
 /// The main struct to run proxy server
 pub struct MitmProxy {
