@@ -56,7 +56,13 @@ async fn main() {
                 comm.client_addr,
                 uri,
                 response.status(),
-                response.body_mut().concat().await.len()
+                response
+                    .body_mut()
+                    .map(|r| r.map(|b| b.len()).unwrap_or(0))
+                    .collect::<Vec<_>>()
+                    .await
+                    .into_iter()
+                    .sum::<usize>()
             );
         }
     }

@@ -72,7 +72,9 @@ pub struct Communication<B> {
     /// NOTE: If you drop this without send(), communication will be canceled and server will not receive request and client will get 500 Internal Server Error.
     pub request_back: futures::channel::oneshot::Sender<Request<B>>,
     /// Response from server. It may fail to receive response when some error occurs. Currently, not way to know the error.
-    pub response: futures::channel::oneshot::Receiver<Response<UnboundedReceiver<Vec<u8>>>>,
+    pub response: futures::channel::oneshot::Receiver<
+        Response<UnboundedReceiver<Result<Bytes, Arc<hyper::Error>>>>,
+    >,
     /// Upgraded connection. Proxy will upgrade connection if and only if response status is 101.
     pub upgrade: futures::channel::oneshot::Receiver<Upgrade>,
 }
@@ -144,7 +146,7 @@ impl MitmProxy {
         req: Request<hyper::body::Incoming>,
         tx: UnboundedSender<Communication<B>>,
         client_addr: std::net::SocketAddr,
-    ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Error>
+    ) -> Result<Response<BoxBody<Bytes, Arc<hyper::Error>>>, hyper::Error>
     where
         B: Body<Data = Bytes> + Send + 'static,
         B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
@@ -270,10 +272,9 @@ impl MitmProxy {
                                                 );
                                             }
                                         });
-                                        return Ok::<_, hyper::Error>(res);
                                     }
 
-                                    Ok::<_, hyper::Error>(res)
+                                    Ok(res)
                                 }
                             }),
                         )
@@ -329,7 +330,7 @@ impl MitmProxy {
             });
             let Ok(mut req) = req_back_rx.await else {
                 tracing::info!("Request canceled");
-                return Ok::<_, hyper::Error>(no_body(StatusCode::INTERNAL_SERVER_ERROR));
+                return Ok(no_body(StatusCode::INTERNAL_SERVER_ERROR));
             };
             remove_authority(&mut req);
 
@@ -364,7 +365,7 @@ impl MitmProxy {
     }
 }
 
-fn no_body(status: StatusCode) -> Response<BoxBody<Bytes, hyper::Error>> {
+fn no_body(status: StatusCode) -> Response<BoxBody<Bytes, Arc<hyper::Error>>> {
     let mut res = Response::new(Empty::new().map_err(|never| match never {}).boxed());
     *res.status_mut() = status;
     res
@@ -439,9 +440,9 @@ where
 fn dup_response(
     res: Response<hyper::body::Incoming>,
 ) -> (
-    Response<BoxBody<Bytes, hyper::Error>>,
+    Response<BoxBody<Bytes, Arc<hyper::Error>>>,
     Response<Empty<Bytes>>,
-    Response<UnboundedReceiver<Vec<u8>>>,
+    Response<UnboundedReceiver<Result<Bytes, Arc<hyper::Error>>>>,
 ) {
     let (parts, body) = res.into_parts();
     let (body, rx) = dup_body(body);
@@ -456,8 +457,8 @@ fn dup_response(
 fn dup_body<B>(
     body: B,
 ) -> (
-    StreamBody<impl Stream<Item = Result<Frame<Bytes>, B::Error>>>,
-    UnboundedReceiver<Vec<u8>>,
+    StreamBody<impl Stream<Item = Result<Frame<Bytes>, Arc<B::Error>>>>,
+    UnboundedReceiver<Result<Bytes, Arc<B::Error>>>,
 )
 where
     B: Body<Data = Bytes> + Unpin + 'static,
@@ -466,12 +467,20 @@ where
     let (tx, rx) = futures::channel::mpsc::unbounded();
     let body = futures::stream::unfold((body, tx), |(mut body, tx)| async move {
         if let Some(frame) = body.frame().await {
-            if let Ok(frame) = frame.as_ref() {
-                if let Some(data) = frame.data_ref() {
-                    let _ = tx.unbounded_send(data.to_vec());
+            match frame {
+                Ok(frame) => {
+                    if let Some(data) = frame.data_ref() {
+                        let _ = tx.unbounded_send(Ok(data.clone()));
+                    }
+                    Some((Ok(frame), (body, tx)))
+                }
+                Err(err) => {
+                    let err = Arc::new(err);
+
+                    let _ = tx.unbounded_send(Err(err.clone()));
+                    Some((Err(err.clone()), (body, tx)))
                 }
             }
-            Some((frame, (body, tx)))
         } else {
             None
         }
