@@ -12,12 +12,13 @@ use axum::{
 use axum_server::tls_rustls::RustlsConfig;
 use bytes::Bytes;
 use futures::{
+    channel::mpsc::UnboundedReceiver,
     stream::{self, BoxStream},
     StreamExt,
 };
 use http_mitm_proxy::Communication;
 use hyper::{
-    body::{Body, Incoming},
+    body::{Body, Frame, Incoming},
     header,
 };
 use rcgen::generate_simple_self_signed;
@@ -195,6 +196,20 @@ where
     }
 }
 
+async fn read_body(
+    body: &mut UnboundedReceiver<Result<Frame<Bytes>, Arc<hyper::Error>>>,
+) -> Vec<u8> {
+    let mut buf = Vec::new();
+    while let Some(frame) = body.next().await {
+        if let Ok(frame) = frame {
+            if let Some(data) = frame.data_ref() {
+                buf.extend_from_slice(data);
+            }
+        }
+    }
+    buf
+}
+
 #[tokio::test]
 async fn test_simple() {
     let app = Router::new().route("/", get(|| async { "Hello, World!" }));
@@ -230,13 +245,7 @@ async fn test_simple() {
         format!("127.0.0.1:{}", setup.server_port).as_bytes()
     );
 
-    let body = communication
-        .response
-        .await
-        .unwrap()
-        .body_mut()
-        .concat()
-        .await;
+    let body = read_body(communication.response.await.unwrap().body_mut()).await;
     assert_eq!(String::from_utf8(body).unwrap(), "Hello, World!");
 }
 
@@ -284,13 +293,7 @@ async fn test_modify_header() {
         format!("127.0.0.1:{}", setup.server_port).as_bytes()
     );
 
-    let body = communication
-        .response
-        .await
-        .unwrap()
-        .body_mut()
-        .concat()
-        .await;
+    let body = read_body(communication.response.await.unwrap().body_mut()).await;
     assert_eq!(String::from_utf8(body).unwrap(), "MODIFIED");
 }
 
@@ -326,13 +329,7 @@ async fn test_keep_alive() {
             format!("127.0.0.1:{}", setup.server_port).as_bytes()
         );
 
-        let body = communication
-            .response
-            .await
-            .unwrap()
-            .body_mut()
-            .concat()
-            .await;
+        let body = read_body(communication.response.await.unwrap().body_mut()).await;
         assert_eq!(String::from_utf8(body).unwrap(), "Hello, World!");
     }
 }
@@ -361,13 +358,7 @@ async fn test_sse() {
         .request_back
         .send(communication.request)
         .unwrap();
-    let body = communication
-        .response
-        .await
-        .unwrap()
-        .body_mut()
-        .concat()
-        .await;
+    let body = read_body(communication.response.await.unwrap().body_mut()).await;
 
     assert_eq!(
         body,
@@ -455,13 +446,7 @@ async fn test_tls_simple() {
         format!("127.0.0.1:{}", setup.server_port).as_bytes()
     );
 
-    let body = communication
-        .response
-        .await
-        .unwrap()
-        .body_mut()
-        .concat()
-        .await;
+    let body = read_body(communication.response.await.unwrap().body_mut()).await;
     assert_eq!(String::from_utf8(body).unwrap(), "Hello, World!");
 }
 
@@ -515,13 +500,7 @@ async fn test_tls_keep_alive() {
             format!("127.0.0.1:{}", setup.server_port).as_bytes()
         );
 
-        let body = communication
-            .response
-            .await
-            .unwrap()
-            .body_mut()
-            .concat()
-            .await;
+        let body = read_body(communication.response.await.unwrap().body_mut()).await;
         assert_eq!(String::from_utf8(body).unwrap(), "Hello, World!");
     }
 }
@@ -550,13 +529,7 @@ async fn test_tls_sse() {
         .request_back
         .send(communication.request)
         .unwrap();
-    let body = communication
-        .response
-        .await
-        .unwrap()
-        .body_mut()
-        .concat()
-        .await;
+    let body = read_body(communication.response.await.unwrap().body_mut()).await;
 
     assert_eq!(
         body,

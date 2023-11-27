@@ -73,7 +73,7 @@ pub struct Communication<B> {
     pub request_back: futures::channel::oneshot::Sender<Request<B>>,
     /// Response from server. It may fail to receive response when some error occurs. Currently, not way to know the error.
     pub response: futures::channel::oneshot::Receiver<
-        Response<UnboundedReceiver<Result<Bytes, Arc<hyper::Error>>>>,
+        Response<UnboundedReceiver<Result<Frame<Bytes>, Arc<hyper::Error>>>>,
     >,
     /// Upgraded connection. Proxy will upgrade connection if and only if response status is 101.
     pub upgrade: futures::channel::oneshot::Receiver<Upgrade>,
@@ -442,7 +442,7 @@ fn dup_response(
 ) -> (
     Response<BoxBody<Bytes, Arc<hyper::Error>>>,
     Response<Empty<Bytes>>,
-    Response<UnboundedReceiver<Result<Bytes, Arc<hyper::Error>>>>,
+    Response<UnboundedReceiver<Result<Frame<Bytes>, Arc<hyper::Error>>>>,
 ) {
     let (parts, body) = res.into_parts();
     let (body, rx) = dup_body(body);
@@ -458,7 +458,7 @@ fn dup_body<B>(
     body: B,
 ) -> (
     StreamBody<impl Stream<Item = Result<Frame<Bytes>, Arc<B::Error>>>>,
-    UnboundedReceiver<Result<Bytes, Arc<B::Error>>>,
+    UnboundedReceiver<Result<Frame<Bytes>, Arc<B::Error>>>,
 )
 where
     B: Body<Data = Bytes> + Unpin + 'static,
@@ -470,7 +470,9 @@ where
             match frame {
                 Ok(frame) => {
                     if let Some(data) = frame.data_ref() {
-                        let _ = tx.unbounded_send(Ok(data.clone()));
+                        let _ = tx.unbounded_send(Ok(Frame::data(data.clone())));
+                    } else if let Some(trailers) = frame.trailers_ref() {
+                        let _ = tx.unbounded_send(Ok(Frame::trailers(trailers.clone().into())));
                     }
                     Some((Ok(frame), (body, tx)))
                 }

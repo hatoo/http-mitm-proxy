@@ -64,12 +64,21 @@ async fn main() {
         // modify the request here if you want
         let _ = comm.request_back.send(comm.request);
         if let Ok(mut response) = comm.response.await {
+            let mut len = 0;
+            let body = response.body_mut();
+            while let Some(frame) = body.next().await {
+                if let Ok(frame) = frame {
+                    if let Some(data) = frame.data_ref() {
+                        len += data.len();
+                    }
+                }
+            }
             println!(
                 "{}\t{}\t{}\t{}",
                 comm.client_addr,
                 uri,
                 response.status(),
-                response.body_mut().concat().await.len()
+                len
             );
         }
     }
