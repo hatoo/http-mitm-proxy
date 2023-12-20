@@ -472,7 +472,7 @@ where
                     if let Some(data) = frame.data_ref() {
                         let _ = tx.unbounded_send(Ok(Frame::data(data.clone())));
                     } else if let Some(trailers) = frame.trailers_ref() {
-                        let _ = tx.unbounded_send(Ok(Frame::trailers(trailers.clone().into())));
+                        let _ = tx.unbounded_send(Ok(Frame::trailers(trailers.clone())));
                     }
                     Some((Ok(frame), (body, tx)))
                 }
