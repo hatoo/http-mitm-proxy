@@ -105,7 +105,7 @@ where
 
     tokio::spawn(server);
 
-    let proxy = http_mitm_proxy::MitmProxy::new(
+    let proxy = http_mitm_proxy::MitmProxy::<&'static rcgen::Certificate>::new(
         None,
         tokio_native_tls::native_tls::TlsConnector::new().unwrap(),
     );

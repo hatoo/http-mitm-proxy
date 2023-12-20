@@ -14,7 +14,7 @@ use hyper::{
     Method, Request, Response, StatusCode, Uri,
 };
 use hyper_util::rt::TokioIo;
-use std::{future::Future, sync::Arc};
+use std::{future::Future, ops::Deref, sync::Arc};
 use tls::server_config;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -29,18 +29,18 @@ pub use tokio_native_tls;
 mod tls;
 #[derive(Clone)]
 /// The main struct to run proxy server
-pub struct MitmProxy {
+pub struct MitmProxy<C> {
     /// Root certificate to sign fake certificates. You may need to trust this certificate on client application to use HTTPS.
     ///
     /// If None, proxy will just tunnel HTTPS traffic and will not observe HTTPS traffic.
-    pub root_cert: Option<Arc<rcgen::Certificate>>,
+    pub root_cert: Option<C>,
     /// TLS connector to connect from proxy to server.
     pub tls_connector: tokio_native_tls::native_tls::TlsConnector,
 }
 
-impl MitmProxy {
+impl<C> MitmProxy<C> {
     pub fn new(
-        root_cert: Option<Arc<rcgen::Certificate>>,
+        root_cert: Option<C>,
         tls_connector: tokio_native_tls::native_tls::TlsConnector,
     ) -> Self {
         Self {
@@ -77,7 +77,8 @@ pub struct Communication<B> {
     pub upgrade: futures::channel::oneshot::Receiver<Upgrade>,
 }
 
-impl MitmProxy {
+/// C is typically Arc<Certificate> or &'static Certificate
+impl<C: Deref<Target = rcgen::Certificate> + Clone + Send + Sync + 'static> MitmProxy<C> {
     /// Bind proxy server to address.
     /// You can observe communications between client and server by receiving stream.
     /// To run proxy server, you need to run returned future. This API design give you an ability to cancel proxy server when you want.
@@ -169,7 +170,8 @@ impl MitmProxy {
                 };
 
                 if let Some(root_cert) = proxy.root_cert.as_ref() {
-                    let Ok(server_config) = server_config(host.to_string(), root_cert) else {
+                    let Ok(server_config) = server_config(host.to_string(), root_cert.deref())
+                    else {
                         tracing::error!("Failed to create server config for {}", host);
                         return;
                     };
