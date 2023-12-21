@@ -14,7 +14,7 @@ use hyper::{
     Method, Request, Response, StatusCode, Uri,
 };
 use hyper_util::rt::TokioIo;
-use std::{future::Future, ops::Deref, sync::Arc};
+use std::{borrow::Borrow, future::Future, sync::Arc};
 use tls::server_config;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -83,7 +83,7 @@ pub struct Communication<B> {
 }
 
 /// C is typically Arc<Certificate> or &'static Certificate
-impl<C: Deref<Target = rcgen::Certificate> + Send + Sync + 'static> MitmProxy<C> {
+impl<C: Borrow<rcgen::Certificate> + Send + Sync + 'static> MitmProxy<C> {
     /// Bind proxy server to address.
     /// You can observe communications between client and server by receiving stream.
     /// To run proxy server, you need to run returned future. This API design give you an ability to cancel proxy server when you want.
@@ -183,7 +183,7 @@ impl<C: Deref<Target = rcgen::Certificate> + Send + Sync + 'static> MitmProxy<C>
                 };
 
                 if let Some(root_cert) = proxy.root_cert.as_ref() {
-                    let Ok(server_config) = server_config(host.to_string(), root_cert.deref())
+                    let Ok(server_config) = server_config(host.to_string(), root_cert.borrow())
                     else {
                         tracing::error!("Failed to create server config for {}", host);
                         return;

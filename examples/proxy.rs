@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use futures::StreamExt;
 use http_mitm_proxy::MitmProxy;
 
@@ -21,11 +19,12 @@ fn make_root_cert() -> rcgen::Certificate {
 
 #[tokio::main]
 async fn main() {
-    let root_cert = Arc::new(make_root_cert());
+    let root_cert = make_root_cert();
+    let root_cert_pem = root_cert.serialize_pem().unwrap();
 
     let proxy = MitmProxy::new(
         // This is the root cert that will be used to sign the fake certificates
-        Some(root_cert.clone()),
+        Some(root_cert),
         // This is the connector that will be used to connect to the upstream server from proxy
         tokio_native_tls::native_tls::TlsConnector::new().unwrap(),
     );
@@ -38,7 +37,7 @@ async fn main() {
     println!();
     println!("Trust this cert if you want to use HTTPS");
     println!();
-    println!("{}", root_cert.serialize_pem().unwrap());
+    println!("{}", root_cert_pem);
     println!();
 
     /*

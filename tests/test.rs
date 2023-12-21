@@ -150,14 +150,11 @@ where
 
     tokio::spawn(server);
 
-    let root_cert = Arc::new(root_cert());
+    let root_cert = root_cert();
+    let root_cert_der = root_cert.serialize_der().unwrap();
 
     let proxy = http_mitm_proxy::MitmProxy::new(
-        if without_cert {
-            None
-        } else {
-            Some(root_cert.clone())
-        },
+        if without_cert { None } else { Some(root_cert) },
         tokio_native_tls::native_tls::TlsConnector::builder()
             .danger_accept_invalid_certs(true)
             .danger_accept_invalid_hostnames(true)
@@ -176,9 +173,7 @@ where
 
     let client = if !without_cert {
         client_builder
-            .add_root_certificate(
-                reqwest::Certificate::from_der(&root_cert.serialize_der().unwrap()).unwrap(),
-            )
+            .add_root_certificate(reqwest::Certificate::from_der(&root_cert_der).unwrap())
             .build()
             .unwrap()
     } else {
