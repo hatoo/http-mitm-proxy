@@ -38,6 +38,11 @@ pub struct MitmProxy<C> {
     pub tls_connector: tokio_native_tls::native_tls::TlsConnector,
 }
 
+pub struct MitmProxyImpl<C> {
+    pub root_cert: Option<C>,
+    pub tls_connector: tokio_native_tls::TlsConnector,
+}
+
 impl<C> MitmProxy<C> {
     pub fn new(
         root_cert: Option<C>,
@@ -78,12 +83,12 @@ pub struct Communication<B> {
 }
 
 /// C is typically Arc<Certificate> or &'static Certificate
-impl<C: Deref<Target = rcgen::Certificate> + Clone + Send + Sync + 'static> MitmProxy<C> {
+impl<C: Deref<Target = rcgen::Certificate> + Send + Sync + 'static> MitmProxy<C> {
     /// Bind proxy server to address.
     /// You can observe communications between client and server by receiving stream.
     /// To run proxy server, you need to run returned future. This API design give you an ability to cancel proxy server when you want.
     pub async fn bind<A: ToSocketAddrs, B>(
-        &self,
+        self,
         addr: A,
     ) -> Result<
         (
@@ -99,9 +104,17 @@ impl<C: Deref<Target = rcgen::Certificate> + Clone + Send + Sync + 'static> Mitm
         let listener = TcpListener::bind(addr).await?;
         let (tx, rx) = futures::channel::mpsc::unbounded();
 
-        let proxy = self.clone();
-
         let serve = async move {
+            let MitmProxy {
+                root_cert,
+                tls_connector,
+            } = self;
+
+            let proxy = Arc::new(MitmProxyImpl {
+                root_cert,
+                tls_connector: tokio_native_tls::TlsConnector::from(tls_connector),
+            });
+
             loop {
                 let Ok((stream, client_addr)) = listener.accept().await else {
                     continue;
@@ -109,7 +122,9 @@ impl<C: Deref<Target = rcgen::Certificate> + Clone + Send + Sync + 'static> Mitm
                 let tx = tx.clone();
 
                 let proxy = proxy.clone();
-                tokio::spawn(async move { proxy.handle(stream, tx, client_addr).await });
+                tokio::spawn(
+                    async move { MitmProxy::handle(proxy, stream, tx, client_addr).await },
+                );
             }
         };
 
@@ -117,7 +132,7 @@ impl<C: Deref<Target = rcgen::Certificate> + Clone + Send + Sync + 'static> Mitm
     }
 
     async fn handle<B>(
-        &self,
+        proxy: Arc<MitmProxyImpl<C>>,
         stream: tokio::net::TcpStream,
         tx: UnboundedSender<Communication<B>>,
         client_addr: std::net::SocketAddr,
@@ -130,7 +145,7 @@ impl<C: Deref<Target = rcgen::Certificate> + Clone + Send + Sync + 'static> Mitm
             .title_case_headers(true)
             .serve_connection(
                 TokioIo::new(stream),
-                service_fn(|req| self.proxy(req, tx.clone(), client_addr)),
+                service_fn(|req| Self::proxy(proxy.clone(), req, tx.clone(), client_addr)),
             )
             .with_upgrades()
             .await
@@ -140,7 +155,7 @@ impl<C: Deref<Target = rcgen::Certificate> + Clone + Send + Sync + 'static> Mitm
     }
 
     async fn proxy<B>(
-        &self,
+        proxy: Arc<MitmProxyImpl<C>>,
         req: Request<hyper::body::Incoming>,
         tx: UnboundedSender<Communication<B>>,
         client_addr: std::net::SocketAddr,
@@ -161,7 +176,6 @@ impl<C: Deref<Target = rcgen::Certificate> + Clone + Send + Sync + 'static> Mitm
                 tracing::error!("Bad CONNECT request: {}, Reason: Invalid Host", uri);
                 return Ok(no_body(StatusCode::BAD_REQUEST));
             };
-            let proxy = self.clone();
             tokio::spawn(async move {
                 let Ok(client) = hyper::upgrade::on(req).await else {
                     tracing::error!("Bad CONNECT request: {}, Reason: Invalid Upgrade", uri);
@@ -186,9 +200,7 @@ impl<C: Deref<Target = rcgen::Certificate> + Clone + Send + Sync + 'static> Mitm
                         tracing::error!("Failed to connect to {}", authority);
                         return;
                     };
-                    let native_tls_connector = proxy.tls_connector.clone();
-                    let connector = tokio_native_tls::TlsConnector::from(native_tls_connector);
-                    let Ok(server) = connector.connect(&host, server).await else {
+                    let Ok(server) = proxy.tls_connector.connect(&host, server).await else {
                         tracing::error!("Failed to handshake TLS to {}", host);
                         return;
                     };
