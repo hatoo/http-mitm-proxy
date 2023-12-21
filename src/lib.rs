@@ -103,8 +103,7 @@ impl<C: Deref<Target = rcgen::Certificate> + Clone + Send + Sync + 'static> Mitm
 
         let serve = async move {
             loop {
-                let stream = listener.accept().await;
-                let Ok((stream, client_addr)) = stream else {
+                let Ok((stream, client_addr)) = listener.accept().await else {
                     continue;
                 };
                 let tx = tx.clone();
