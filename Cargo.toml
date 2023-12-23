@@ -28,7 +28,6 @@ tracing = "0.1.40"
 hyper-util = { version = "0.1.1", features = ["tokio"] }
 
 [dev-dependencies]
-axum = { version = "0.6", features = ["headers"] }
-axum-server = { version = "0.5.1", features = ["tls-rustls"] }
+axum = "0.7.2"
+axum-server = { version = "0.6.0", features = ["tls-rustls"] }
 reqwest = "0.11.22"
-hyper14 = { package = "hyper", version = "0.14", features = ["full"] }

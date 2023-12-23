@@ -4,10 +4,9 @@ use std::{
 };
 
 use axum::{
-    headers::UserAgent,
     response::{sse::Event, IntoResponse, Sse},
     routing::get,
-    Router, TypedHeader,
+    Router,
 };
 use axum_server::tls_rustls::RustlsConfig;
 use bytes::Bytes;
@@ -19,8 +18,9 @@ use futures::{
 use http_mitm_proxy::Communication;
 use hyper::{
     body::{Body, Frame, Incoming},
-    header,
+    header, HeaderMap,
 };
+use hyper_util::rt::TokioIo;
 use rcgen::generate_simple_self_signed;
 use reqwest::Client;
 use rustls::ServerConfig;
@@ -38,11 +38,7 @@ async fn bind_app(app: Router) -> (u16, impl std::future::Future<Output = ()>) {
         .await
         .unwrap();
     (port, async {
-        axum::Server::from_tcp(listener.into_std().unwrap())
-            .unwrap()
-            .serve(app.into_make_service())
-            .await
-            .unwrap()
+        axum::serve(listener, app).await.unwrap();
     })
 }
 
@@ -248,9 +244,14 @@ async fn test_simple() {
 async fn test_modify_header() {
     let app = Router::new().route(
         "/",
-        get(
-            |TypedHeader(user_agent): TypedHeader<UserAgent>| async move { user_agent.to_string() },
-        ),
+        get(|header: HeaderMap| async move {
+            header
+                .get(header::USER_AGENT)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .to_string()
+        }),
     );
 
     let mut setup = setup(app).await;
@@ -357,7 +358,7 @@ async fn test_sse() {
 
     assert_eq!(
         body,
-        b"event:message\ndata:1\n\nevent:message\ndata:2\n\nevent:message\ndata:3\n\n"
+        b"event: message\ndata: 1\n\nevent: message\ndata: 2\n\nevent: message\ndata: 3\n\n"
     );
 }
 
@@ -370,8 +371,8 @@ async fn test_upgrade() {
         setup
             .client
             .get(format!("http://127.0.0.1:{}/upgrade", setup.server_port))
-            .header(axum::http::header::UPGRADE, "raw")
-            .header(axum::http::header::CONNECTION, "Upgrade")
+            .header(reqwest::header::UPGRADE, "raw")
+            .header(reqwest::header::CONNECTION, "Upgrade")
             .send(),
     );
 
@@ -393,7 +394,8 @@ async fn test_upgrade() {
 
 async fn upgrade_handler<B: Send + 'static>(req: axum::http::Request<B>) -> impl IntoResponse {
     tokio::spawn(async move {
-        let mut socket = hyper14::upgrade::on(req).await.unwrap();
+        let socket = hyper::upgrade::on(req).await.unwrap();
+        let mut socket = TokioIo::new(socket);
 
         socket.write_all(b"ping").await.unwrap();
         let mut buf = [0u8; 4];
@@ -403,7 +405,7 @@ async fn upgrade_handler<B: Send + 'static>(req: axum::http::Request<B>) -> impl
 
     axum::http::Response::builder()
         .status(axum::http::StatusCode::SWITCHING_PROTOCOLS)
-        .body(axum::body::Empty::new())
+        .body(http_body_util::Empty::new())
         .unwrap()
 }
 
@@ -528,7 +530,7 @@ async fn test_tls_sse() {
 
     assert_eq!(
         body,
-        b"event:message\ndata:1\n\nevent:message\ndata:2\n\nevent:message\ndata:3\n\n"
+        b"event: message\ndata: 1\n\nevent: message\ndata: 2\n\nevent: message\ndata: 3\n\n"
     );
 }
 
@@ -541,8 +543,8 @@ async fn test_tls_upgrade() {
         setup
             .client
             .get(format!("https://127.0.0.1:{}/upgrade", setup.server_port))
-            .header(axum::http::header::UPGRADE, "raw")
-            .header(axum::http::header::CONNECTION, "Upgrade")
+            .header(reqwest::header::UPGRADE, "raw")
+            .header(reqwest::header::CONNECTION, "Upgrade")
             .send(),
     );
 
