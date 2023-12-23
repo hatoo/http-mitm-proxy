@@ -107,7 +107,7 @@ where
     );
     let proxy_port = get_port();
 
-    let (branch, server) = proxy.bind(("127.0.0.1", proxy_port)).await.unwrap();
+    let (twig, server) = proxy.bind(("127.0.0.1", proxy_port)).await.unwrap();
 
     tokio::spawn(server);
 
@@ -116,7 +116,7 @@ where
     Setup {
         _proxy_port: proxy_port,
         server_port,
-        proxy: branch.boxed(),
+        proxy: twig.boxed(),
         client,
     }
 }
@@ -159,7 +159,7 @@ where
     );
     let proxy_port = get_port();
 
-    let (branch, server) = proxy.bind(("127.0.0.1", proxy_port)).await.unwrap();
+    let (twig, server) = proxy.bind(("127.0.0.1", proxy_port)).await.unwrap();
 
     tokio::spawn(server);
 
@@ -182,7 +182,7 @@ where
     Setup {
         _proxy_port: proxy_port,
         server_port,
-        proxy: branch.boxed(),
+        proxy: twig.boxed(),
         client,
     }
 }
