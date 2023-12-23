@@ -17,10 +17,11 @@ pub fn server_config(
     let signed = cert.serialize_der_with_signer(root_cert).unwrap();
     let private_key = cert.get_key_pair().serialize_der();
     rustls::ServerConfig::builder()
-        .with_safe_defaults()
         .with_no_client_auth()
         .with_single_cert(
-            vec![rustls::Certificate(signed)],
-            rustls::PrivateKey(private_key),
+            vec![rustls::pki_types::CertificateDer::from(signed)],
+            rustls::pki_types::PrivateKeyDer::Pkcs8(rustls::pki_types::PrivatePkcs8KeyDer::from(
+                private_key,
+            )),
         )
 }

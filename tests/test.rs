@@ -23,7 +23,7 @@ use hyper::{
 use hyper_util::rt::TokioIo;
 use rcgen::generate_simple_self_signed;
 use reqwest::Client;
-use rustls::ServerConfig;
+use rustls21::ServerConfig;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 static PORT: AtomicU16 = AtomicU16::new(3666);
@@ -68,8 +68,8 @@ fn tls_server_config(host: String) -> Arc<ServerConfig> {
         .with_safe_defaults()
         .with_no_client_auth()
         .with_single_cert(
-            vec![rustls::Certificate(cert.serialize_der().unwrap())],
-            rustls::PrivateKey(private_key),
+            vec![rustls21::Certificate(cert.serialize_der().unwrap())],
+            rustls21::PrivateKey(private_key),
         )
         .unwrap();
 
