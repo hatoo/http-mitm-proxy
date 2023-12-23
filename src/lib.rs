@@ -38,9 +38,9 @@ pub struct MitmProxy<C> {
     pub tls_connector: tokio_native_tls::native_tls::TlsConnector,
 }
 
-pub struct MitmProxyImpl<C> {
-    pub root_cert: Option<C>,
-    pub tls_connector: tokio_native_tls::TlsConnector,
+struct MitmProxyImpl<C> {
+    root_cert: Option<C>,
+    tls_connector: tokio_native_tls::TlsConnector,
 }
 
 impl<C> MitmProxy<C> {
@@ -82,7 +82,6 @@ pub struct Communication<B> {
     pub upgrade: futures::channel::oneshot::Receiver<Upgrade>,
 }
 
-/// C is typically Arc<Certificate> or &'static Certificate
 impl<C: Borrow<rcgen::Certificate> + Send + Sync + 'static> MitmProxy<C> {
     /// Bind proxy server to address.
     /// You can observe communications between client and server by receiving stream.
