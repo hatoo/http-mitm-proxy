@@ -33,6 +33,7 @@ async fn main() {
     let opt = Opt::parse();
 
     let root_cert = if let (Some(cert), Some(private_key)) = (opt.cert, opt.private_key) {
+        // Use existing key
         let param = rcgen::CertificateParams::from_ca_cert_pem(
             &std::fs::read_to_string(cert).unwrap(),
             rcgen::KeyPair::from_pem(&std::fs::read_to_string(private_key).unwrap()).unwrap(),
