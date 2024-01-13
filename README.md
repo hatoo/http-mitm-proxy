@@ -11,8 +11,19 @@ A HTTP proxy server library intended to be a backend of application like Burp pr
 ## Usage
 
 ```rust, no_run
+use std::path::PathBuf;
+
+use clap::Parser;
 use futures::StreamExt;
 use http_mitm_proxy::MitmProxy;
+
+#[derive(Parser)]
+struct Opt {
+    #[clap(requires("private_key"))]
+    cert: Option<PathBuf>,
+    #[clap(requires("cert"))]
+    private_key: Option<PathBuf>,
+}
 
 fn make_root_cert() -> rcgen::Certificate {
     let mut param = rcgen::CertificateParams::default();
@@ -32,7 +43,20 @@ fn make_root_cert() -> rcgen::Certificate {
 
 #[tokio::main]
 async fn main() {
-    let root_cert = make_root_cert();
+    let opt = Opt::parse();
+
+    let root_cert = if let (Some(cert), Some(private_key)) = (opt.cert, opt.private_key) {
+        // Use existing key
+        let param = rcgen::CertificateParams::from_ca_cert_pem(
+            &std::fs::read_to_string(cert).unwrap(),
+            rcgen::KeyPair::from_pem(&std::fs::read_to_string(private_key).unwrap()).unwrap(),
+        )
+        .unwrap();
+        rcgen::Certificate::from_params(param).unwrap()
+    } else {
+        make_root_cert()
+    };
+
     let root_cert_pem = root_cert.serialize_pem().unwrap();
 
     let proxy = MitmProxy::new(
