@@ -236,7 +236,7 @@ async fn test_simple() {
         format!("127.0.0.1:{}", setup.server_port).as_bytes()
     );
 
-    let body = read_body(communication.response.await.unwrap().body_mut()).await;
+    let body = read_body(communication.response.await.unwrap().unwrap().body_mut()).await;
     assert_eq!(String::from_utf8(body).unwrap(), "Hello, World!");
 }
 
@@ -289,7 +289,7 @@ async fn test_modify_header() {
         format!("127.0.0.1:{}", setup.server_port).as_bytes()
     );
 
-    let body = read_body(communication.response.await.unwrap().body_mut()).await;
+    let body = read_body(communication.response.await.unwrap().unwrap().body_mut()).await;
     assert_eq!(String::from_utf8(body).unwrap(), "MODIFIED");
 }
 
@@ -325,7 +325,7 @@ async fn test_keep_alive() {
             format!("127.0.0.1:{}", setup.server_port).as_bytes()
         );
 
-        let body = read_body(communication.response.await.unwrap().body_mut()).await;
+        let body = read_body(communication.response.await.unwrap().unwrap().body_mut()).await;
         assert_eq!(String::from_utf8(body).unwrap(), "Hello, World!");
     }
 }
@@ -354,7 +354,7 @@ async fn test_sse() {
         .request_back
         .send(communication.request)
         .unwrap();
-    let body = read_body(communication.response.await.unwrap().body_mut()).await;
+    let body = read_body(communication.response.await.unwrap().unwrap().body_mut()).await;
 
     assert_eq!(
         body,
@@ -443,7 +443,7 @@ async fn test_tls_simple() {
         format!("127.0.0.1:{}", setup.server_port).as_bytes()
     );
 
-    let body = read_body(communication.response.await.unwrap().body_mut()).await;
+    let body = read_body(communication.response.await.unwrap().unwrap().body_mut()).await;
     assert_eq!(String::from_utf8(body).unwrap(), "Hello, World!");
 }
 
@@ -497,7 +497,7 @@ async fn test_tls_keep_alive() {
             format!("127.0.0.1:{}", setup.server_port).as_bytes()
         );
 
-        let body = read_body(communication.response.await.unwrap().body_mut()).await;
+        let body = read_body(communication.response.await.unwrap().unwrap().body_mut()).await;
         assert_eq!(String::from_utf8(body).unwrap(), "Hello, World!");
     }
 }
@@ -526,7 +526,7 @@ async fn test_tls_sse() {
         .request_back
         .send(communication.request)
         .unwrap();
-    let body = read_body(communication.response.await.unwrap().body_mut()).await;
+    let body = read_body(communication.response.await.unwrap().unwrap().body_mut()).await;
 
     assert_eq!(
         body,

@@ -86,7 +86,7 @@ async fn main() {
         let uri = comm.request.uri().clone();
         // modify the request here if you want
         let _ = comm.request_back.send(comm.request);
-        if let Ok(mut response) = comm.response.await {
+        if let Ok(Ok(mut response)) = comm.response.await {
             let mut len = 0;
             let body = response.body_mut();
             while let Some(frame) = body.next().await {
@@ -106,4 +106,5 @@ async fn main() {
         }
     }
 }
+
 ```

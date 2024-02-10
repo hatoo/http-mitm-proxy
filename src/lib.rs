@@ -74,9 +74,9 @@ pub struct Communication<B> {
     /// Send request back to server. You can modify request before sending it back.
     /// NOTE: If you drop this without send(), communication will be canceled and server will not receive request and client will get 500 Internal Server Error.
     pub request_back: futures::channel::oneshot::Sender<Request<B>>,
-    /// Response from server. It may fail to receive response when some error occurs. Currently, not way to know the error.
+    /// Response from server. Be sent error if fails to get response from server.
     pub response: futures::channel::oneshot::Receiver<
-        Response<UnboundedReceiver<Result<Frame<Bytes>, Arc<hyper::Error>>>>,
+        Result<Response<UnboundedReceiver<Result<Frame<Bytes>, Arc<hyper::Error>>>>, hyper::Error>,
     >,
     /// Upgraded connection. Proxy will upgrade connection if and only if response status is 101.
     pub upgrade: futures::channel::oneshot::Receiver<Upgrade>,
@@ -251,10 +251,21 @@ impl<C: Borrow<rcgen::Certificate> + Send + Sync + 'static> MitmProxy<C> {
                                     remove_authority(&mut req);
 
                                     let (req, req_parts) = dup_request(req);
-                                    let res = sender.lock().await.send_request(req).await?;
-                                    let (res, res_upgrade, res_middleman) = dup_response(res);
-
-                                    let _ = res_tx.send(res_middleman);
+                                    let (res, res_upgrade) =
+                                        match sender.lock().await.send_request(req).await {
+                                            Ok(res) => {
+                                                let (res, res_upgrade, res_middleman) =
+                                                    dup_response(res);
+                                                let _ = res_tx.send(Ok(res_middleman));
+                                                (res, res_upgrade)
+                                            }
+                                            Err(err) => {
+                                                let _ = res_tx.send(Err(err));
+                                                return Ok::<_, hyper::Error>(no_body(
+                                                    StatusCode::INTERNAL_SERVER_ERROR,
+                                                ));
+                                            }
+                                        };
 
                                     if res.status() == StatusCode::SWITCHING_PROTOCOLS {
                                         tokio::task::spawn(async move {
@@ -345,11 +356,18 @@ impl<C: Borrow<rcgen::Certificate> + Send + Sync + 'static> MitmProxy<C> {
             remove_authority(&mut req);
 
             let (req, req_parts) = dup_request(req);
-            let res = sender.send_request(req).await?;
-            let status = res.status();
-            let (res, res_upgrade, res_middleman) = dup_response(res);
-
-            let _ = res_tx.send(res_middleman);
+            let (status, res, res_upgrade) = match sender.send_request(req).await {
+                Ok(res) => {
+                    let status = res.status();
+                    let (res, res_upgrade, res_middleman) = dup_response(res);
+                    let _ = res_tx.send(Ok(res_middleman));
+                    (status, res, res_upgrade)
+                }
+                Err(err) => {
+                    let _ = res_tx.send(Err(err));
+                    return Ok(no_body(StatusCode::INTERNAL_SERVER_ERROR));
+                }
+            };
 
             // https://developer.mozilla.org/ja/docs/Web/HTTP/Status/101
             if status == StatusCode::SWITCHING_PROTOCOLS {
