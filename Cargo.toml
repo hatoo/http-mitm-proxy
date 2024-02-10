@@ -15,7 +15,14 @@ keywords = ["http", "proxy", "http-proxy"]
 
 [dependencies]
 hyper = { version = "1.0.1", features = ["http1", "server", "client"] }
-tokio = { version = "1.34.0", features = ["full"] }
+tokio = { version = "1.34.0", features = [
+    "macros",
+    "rt",
+    "rt-multi-thread",
+    "parking_lot",
+    "io-util",
+    "net",
+] }
 futures = "0.3.29"
 bytes = "1.5.0"
 http-body-util = "0.1.0"
