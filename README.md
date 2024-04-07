@@ -84,13 +84,14 @@ async fn main() {
     println!();
     println!("{}", root_cert_pem);
     println!();
-    println!("Private key");
-    println!("{}", root_cert_key);
 
     /*
         Save this cert to ca.crt and use it with curl like this:
         curl https://www.google.com -x http://127.0.0.1:3003 --cacert ca.crt
     */
+
+    println!("Private key");
+    println!("{}", root_cert_key);
 
     while let Some(comm) = communications.next().await {
         let uri = comm.request.uri().clone();
