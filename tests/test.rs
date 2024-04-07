@@ -62,14 +62,14 @@ async fn bind_app_tls(app: Router) -> (u16, impl std::future::Future<Output = ()
 
 fn tls_server_config(host: String) -> Arc<ServerConfig> {
     let cert = generate_simple_self_signed(vec![host]).unwrap();
-    let private_key = cert.get_key_pair().serialize_der();
+    // let private_key = cert.key_pair.serialize_der(); // cert.get_key_pair().serialize_der();
 
     let server_config = ServerConfig::builder()
         .with_safe_defaults()
         .with_no_client_auth()
         .with_single_cert(
-            vec![rustls21::Certificate(cert.serialize_der().unwrap())],
-            rustls21::PrivateKey(private_key),
+            vec![rustls21::Certificate(cert.cert.der().to_vec())],
+            rustls21::PrivateKey(cert.key_pair.serialize_der()),
         )
         .unwrap();
 
@@ -101,7 +101,7 @@ where
 
     tokio::spawn(server);
 
-    let proxy = http_mitm_proxy::MitmProxy::<&'static rcgen::Certificate>::new(
+    let proxy = http_mitm_proxy::MitmProxy::<&'static rcgen::CertifiedKey>::new(
         None,
         tokio_native_tls::native_tls::TlsConnector::new().unwrap(),
     );
@@ -121,7 +121,7 @@ where
     }
 }
 
-fn root_cert() -> rcgen::Certificate {
+fn root_cert() -> rcgen::CertifiedKey {
     let mut param = rcgen::CertificateParams::default();
 
     param.distinguished_name = rcgen::DistinguishedName::new();
@@ -134,7 +134,11 @@ fn root_cert() -> rcgen::Certificate {
         rcgen::KeyUsagePurpose::CrlSign,
     ];
     param.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
-    rcgen::Certificate::from_params(param).unwrap()
+
+    let key_pair = rcgen::KeyPair::generate().unwrap();
+    let cert = param.self_signed(&key_pair).unwrap();
+
+    rcgen::CertifiedKey { cert, key_pair }
 }
 
 async fn setup_tls<B>(app: Router, without_cert: bool) -> Setup<B>
@@ -147,7 +151,7 @@ where
     tokio::spawn(server);
 
     let root_cert = root_cert();
-    let root_cert_der = root_cert.serialize_der().unwrap();
+    let root_cert_der = root_cert.cert.der().to_vec();
 
     let proxy = http_mitm_proxy::MitmProxy::new(
         if without_cert { None } else { Some(root_cert) },
