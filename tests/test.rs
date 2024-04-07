@@ -62,7 +62,6 @@ async fn bind_app_tls(app: Router) -> (u16, impl std::future::Future<Output = ()
 
 fn tls_server_config(host: String) -> Arc<ServerConfig> {
     let cert = generate_simple_self_signed(vec![host]).unwrap();
-    // let private_key = cert.key_pair.serialize_der(); // cert.get_key_pair().serialize_der();
 
     let server_config = ServerConfig::builder()
         .with_safe_defaults()
