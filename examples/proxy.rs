@@ -12,7 +12,7 @@ struct Opt {
     private_key: Option<PathBuf>,
 }
 
-fn make_root_cert() -> rcgen::Certificate {
+fn make_root_cert() -> rcgen::CertifiedKey {
     let mut param = rcgen::CertificateParams::default();
 
     param.distinguished_name = rcgen::DistinguishedName::new();
@@ -25,7 +25,11 @@ fn make_root_cert() -> rcgen::Certificate {
         rcgen::KeyUsagePurpose::CrlSign,
     ];
     param.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
-    rcgen::Certificate::from_params(param).unwrap()
+
+    let key_pair = rcgen::KeyPair::generate().unwrap();
+    let cert = param.self_signed(&key_pair).unwrap();
+
+    rcgen::CertifiedKey { cert, key_pair }
 }
 
 #[tokio::main]
@@ -34,17 +38,21 @@ async fn main() {
 
     let root_cert = if let (Some(cert), Some(private_key)) = (opt.cert, opt.private_key) {
         // Use existing key
-        let param = rcgen::CertificateParams::from_ca_cert_pem(
-            &std::fs::read_to_string(cert).unwrap(),
-            rcgen::KeyPair::from_pem(&std::fs::read_to_string(private_key).unwrap()).unwrap(),
-        )
-        .unwrap();
-        rcgen::Certificate::from_params(param).unwrap()
+        let param =
+            rcgen::CertificateParams::from_ca_cert_pem(&std::fs::read_to_string(cert).unwrap())
+                .unwrap();
+        let key_pair =
+            rcgen::KeyPair::from_pem(&std::fs::read_to_string(private_key).unwrap()).unwrap();
+
+        let cert = param.self_signed(&key_pair).unwrap();
+
+        rcgen::CertifiedKey { cert, key_pair }
     } else {
         make_root_cert()
     };
 
-    let root_cert_pem = root_cert.serialize_pem().unwrap();
+    let root_cert_pem = root_cert.cert.pem();
+    let root_cert_key = root_cert.key_pair.serialize_pem();
 
     let proxy = MitmProxy::new(
         // This is the root cert that will be used to sign the fake certificates
@@ -63,6 +71,8 @@ async fn main() {
     println!();
     println!("{}", root_cert_pem);
     println!();
+    println!("Private key");
+    println!("{}", root_cert_key);
 
     /*
         Save this cert to ca.crt and use it with curl like this:

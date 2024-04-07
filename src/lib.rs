@@ -82,7 +82,7 @@ pub struct Communication<B> {
     pub upgrade: futures::channel::oneshot::Receiver<Upgrade>,
 }
 
-impl<C: Borrow<rcgen::Certificate> + Send + Sync + 'static> MitmProxy<C> {
+impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
     /// Bind proxy server to address.
     /// You can observe communications between client and server by receiving stream.
     /// To run proxy server, you need to run returned future. This API design give you an ability to cancel proxy server when you want.
