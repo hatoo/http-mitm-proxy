@@ -1,15 +1,21 @@
 use std::path::PathBuf;
 
-use clap::Parser;
+use clap::{Args, Parser};
 use futures::StreamExt;
 use http_mitm_proxy::MitmProxy;
 
 #[derive(Parser)]
 struct Opt {
-    #[clap(requires("private_key"))]
-    cert: Option<PathBuf>,
-    #[clap(requires("cert"))]
-    private_key: Option<PathBuf>,
+    #[clap(flatten)]
+    external_cert: Option<ExternalCert>,
+}
+
+#[derive(Args, Debug)]
+struct ExternalCert {
+    #[arg(required = false)]
+    cert: PathBuf,
+    #[arg(required = false)]
+    private_key: PathBuf,
 }
 
 fn make_root_cert() -> rcgen::CertifiedKey {
@@ -36,13 +42,15 @@ fn make_root_cert() -> rcgen::CertifiedKey {
 async fn main() {
     let opt = Opt::parse();
 
-    let root_cert = if let (Some(cert), Some(private_key)) = (opt.cert, opt.private_key) {
+    let root_cert = if let Some(external_cert) = opt.external_cert {
         // Use existing key
-        let param =
-            rcgen::CertificateParams::from_ca_cert_pem(&std::fs::read_to_string(cert).unwrap())
-                .unwrap();
+        let param = rcgen::CertificateParams::from_ca_cert_pem(
+            &std::fs::read_to_string(&external_cert.cert).unwrap(),
+        )
+        .unwrap();
         let key_pair =
-            rcgen::KeyPair::from_pem(&std::fs::read_to_string(private_key).unwrap()).unwrap();
+            rcgen::KeyPair::from_pem(&std::fs::read_to_string(&external_cert.private_key).unwrap())
+                .unwrap();
 
         let cert = param.self_signed(&key_pair).unwrap();
 
