@@ -188,6 +188,13 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
                 tracing::error!("Bad CONNECT request: {}, Reason: Invalid Authority", uri);
                 return Ok(no_body(StatusCode::BAD_REQUEST));
             };
+            let Some(original_authority) = original_uri.authority().cloned() else {
+                tracing::error!(
+                    "Bad CONNECT request: {}, Reason: Invalid Authority",
+                    original_uri
+                );
+                return Ok(no_body(StatusCode::BAD_REQUEST));
+            };
             let Some(host) = uri.host().map(str::to_string) else {
                 tracing::error!("Bad CONNECT request: {}, Reason: Invalid Host", uri);
                 return Ok(no_body(StatusCode::BAD_REQUEST));
@@ -241,7 +248,6 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
 
                     tokio::spawn(conn.with_upgrades());
 
-                    let authority = authority.clone();
                     let sender = Arc::new(Mutex::new(sender));
                     let _ = server::conn::http1::Builder::new()
                         .preserve_header_case(true)
@@ -249,7 +255,7 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
                         .serve_connection(
                             TokioIo::new(client),
                             service_fn(move |mut req| {
-                                let authority = authority.clone();
+                                let original_authority = original_authority.clone();
                                 let sender = sender.clone();
                                 let tx = tx.clone();
 
@@ -260,7 +266,7 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
                                     let (upgrade_tx, upgrade_rx) =
                                         futures::channel::oneshot::channel();
 
-                                    inject_authority(&mut req, authority);
+                                    inject_authority(&mut req, original_authority);
                                     let _ = tx.unbounded_send(Communication {
                                         client_addr,
                                         request: req,
