@@ -319,6 +319,21 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
                     .boxed(),
             ))
         } else {
+            let (req_back_tx, req_back_rx) = futures::channel::oneshot::channel();
+            let (res_tx, res_rx) = futures::channel::oneshot::channel();
+            let (upgrade_tx, upgrade_rx) = futures::channel::oneshot::channel();
+            // Used tokio::spawn above to middle_man can consume rx in request()
+            let _ = tx.unbounded_send(Communication {
+                client_addr,
+                request: req,
+                request_back: req_back_tx,
+                response: res_rx,
+                upgrade: upgrade_rx,
+            });
+            let Ok(mut req) = req_back_rx.await else {
+                tracing::info!("Request canceled");
+                return Ok(no_body(StatusCode::INTERNAL_SERVER_ERROR));
+            };
             let Some(host) = req.uri().host() else {
                 tracing::error!("Bad request: {}, Reason: Invalid Host", req.uri());
                 return Ok(no_body(StatusCode::BAD_REQUEST));
@@ -337,22 +352,6 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
                 .await?;
 
             tokio::spawn(conn.with_upgrades());
-
-            let (req_back_tx, req_back_rx) = futures::channel::oneshot::channel();
-            let (res_tx, res_rx) = futures::channel::oneshot::channel();
-            let (upgrade_tx, upgrade_rx) = futures::channel::oneshot::channel();
-            // Used tokio::spawn above to middle_man can consume rx in request()
-            let _ = tx.unbounded_send(Communication {
-                client_addr,
-                request: req,
-                request_back: req_back_tx,
-                response: res_rx,
-                upgrade: upgrade_rx,
-            });
-            let Ok(mut req) = req_back_rx.await else {
-                tracing::info!("Request canceled");
-                return Ok(no_body(StatusCode::INTERNAL_SERVER_ERROR));
-            };
             remove_authority(&mut req);
 
             let (req, req_parts) = dup_request(req);

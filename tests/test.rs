@@ -4,6 +4,7 @@ use std::{
 };
 
 use axum::{
+    http::HeaderValue,
     response::{sse::Event, IntoResponse, Sse},
     routing::get,
     Router,
@@ -295,6 +296,32 @@ async fn test_modify_header() {
     let body = read_body(communication.response.await.unwrap().unwrap().body_mut()).await;
     assert_eq!(String::from_utf8(body).unwrap(), "MODIFIED");
 }
+#[tokio::test]
+async fn test_modify_url() {
+    let app = Router::new().route("/", get(|| async { "Hello, World!" }));
+
+    let mut setup = setup(app).await;
+
+    let response = tokio::spawn(setup.client.get("http://example.com/").send());
+
+    let mut comm = setup.proxy.next().await.unwrap();
+
+    assert_eq!(comm.request.uri().to_string(), "http://example.com/");
+
+    *comm.request.uri_mut() = format!("http://127.0.0.1:{}/", setup.server_port)
+        .parse()
+        .unwrap();
+
+    comm.request_back.send(comm.request).unwrap();
+
+    let response = response.await.unwrap().unwrap();
+
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.bytes().await.unwrap().as_ref(), b"Hello, World!");
+
+    let body = read_body(comm.response.await.unwrap().unwrap().body_mut()).await;
+    assert_eq!(String::from_utf8(body).unwrap(), "Hello, World!");
+}
 
 #[tokio::test]
 async fn test_keep_alive() {
@@ -447,6 +474,46 @@ async fn test_tls_simple() {
     );
 
     let body = read_body(communication.response.await.unwrap().unwrap().body_mut()).await;
+    assert_eq!(String::from_utf8(body).unwrap(), "Hello, World!");
+}
+
+#[tokio::test]
+async fn test_tls_modify_url() {
+    let app = Router::new().route("/", get(|| async { "Hello, World!" }));
+
+    let mut setup = setup_tls(app, false).await;
+
+    let response = tokio::spawn(
+        setup
+            .client
+            // .get(format!("https://127.0.0.1:{}/", setup.server_port))
+            .get("https://example.com/")
+            .send(),
+    );
+    let mut comm = setup.proxy.next().await.unwrap();
+    assert_eq!(comm.request.uri().to_string(), "http://example.com/");
+    *comm.request.uri_mut() = format!("https://127.0.0.1:{}/", setup.server_port)
+        .parse()
+        .unwrap();
+    comm.request.headers_mut().insert(
+        header::HOST,
+        HeaderValue::from_bytes(format!("127.0.0.1:{}", setup.server_port).as_bytes()).unwrap(),
+    );
+
+    let headers = comm.request.headers().clone();
+    comm.request_back.send(comm.request).unwrap();
+
+    let response = response.await.unwrap().unwrap();
+
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.bytes().await.unwrap().as_ref(), b"Hello, World!");
+
+    assert_eq!(
+        headers.get(header::HOST).unwrap(),
+        format!("127.0.0.1:{}", setup.server_port).as_bytes()
+    );
+
+    let body = read_body(comm.response.await.unwrap().unwrap().body_mut()).await;
     assert_eq!(String::from_utf8(body).unwrap(), "Hello, World!");
 }
 
