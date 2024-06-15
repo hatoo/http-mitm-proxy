@@ -163,9 +163,26 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
         B: Body<Data = Bytes> + Send + 'static,
         B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
     {
+        let original_uri = req.uri().clone();
+        let (req_back_tx, req_back_rx) = futures::channel::oneshot::channel();
+        let (res_tx, res_rx) = futures::channel::oneshot::channel();
+        let (upgrade_tx, upgrade_rx) = futures::channel::oneshot::channel();
+        // Used tokio::spawn above to middle_man can consume rx in request()
+        let _ = tx.unbounded_send(Communication {
+            client_addr,
+            request: req,
+            request_back: req_back_tx,
+            response: res_rx,
+            upgrade: upgrade_rx,
+        });
+
+        let Ok(mut req) = req_back_rx.await else {
+            tracing::info!("Request canceled");
+            return Ok(no_body(StatusCode::INTERNAL_SERVER_ERROR));
+        };
+
         if req.method() == Method::CONNECT {
             // HTTPS connection
-            // This request itself will not be reported as `Communication`
             let uri = req.uri().clone();
             let Some(authority) = uri.authority().cloned() else {
                 tracing::error!("Bad CONNECT request: {}, Reason: Invalid Authority", uri);
@@ -175,6 +192,13 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
                 tracing::error!("Bad CONNECT request: {}, Reason: Invalid Host", uri);
                 return Ok(no_body(StatusCode::BAD_REQUEST));
             };
+            let Some(original_host) = original_uri.host().map(str::to_string) else {
+                tracing::error!(
+                    "Bad CONNECT request: {}, Reason: Invalid Host",
+                    original_uri
+                );
+                return Ok(no_body(StatusCode::BAD_REQUEST));
+            };
             tokio::spawn(async move {
                 let Ok(client) = hyper::upgrade::on(req).await else {
                     tracing::error!("Bad CONNECT request: {}, Reason: Invalid Upgrade", uri);
@@ -182,9 +206,11 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
                 };
 
                 if let Some(root_cert) = proxy.root_cert.as_ref() {
-                    let Ok(server_config) = server_config(host.to_string(), root_cert.borrow())
+                    let Ok(server_config) =
+                        // Even if URL is modified by middleman, we should sign with original host name to communicate client.
+                        server_config(original_host.to_string(), root_cert.borrow())
                     else {
-                        tracing::error!("Failed to create server config for {}", host);
+                        tracing::error!("Failed to create server config for {}", original_host);
                         return;
                     };
                     // TODO: Cache server_config
@@ -319,21 +345,6 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
                     .boxed(),
             ))
         } else {
-            let (req_back_tx, req_back_rx) = futures::channel::oneshot::channel();
-            let (res_tx, res_rx) = futures::channel::oneshot::channel();
-            let (upgrade_tx, upgrade_rx) = futures::channel::oneshot::channel();
-            // Used tokio::spawn above to middle_man can consume rx in request()
-            let _ = tx.unbounded_send(Communication {
-                client_addr,
-                request: req,
-                request_back: req_back_tx,
-                response: res_rx,
-                upgrade: upgrade_rx,
-            });
-            let Ok(mut req) = req_back_rx.await else {
-                tracing::info!("Request canceled");
-                return Ok(no_body(StatusCode::INTERNAL_SERVER_ERROR));
-            };
             let Some(host) = req.uri().host() else {
                 tracing::error!("Bad request: {}, Reason: Invalid Host", req.uri());
                 return Ok(no_body(StatusCode::BAD_REQUEST));
