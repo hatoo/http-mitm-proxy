@@ -503,11 +503,10 @@ async fn test_tls_modify_url() {
     comm.request_back.send(comm.request).unwrap();
 
     let mut comm = setup.proxy.next().await.unwrap();
-    // When you modified the URL of CONNECT method, subsequent requests will refers to the modified URL because request UTL other that path and query are inserted by this library.
-    assert_eq!(
-        comm.request.uri().to_string(),
-        format!("https://127.0.0.1:{}/", setup.server_port)
-    );
+    assert_eq!(comm.request.uri().to_string(), "https://example.com:443/");
+    *comm.request.uri_mut() = format!("https://127.0.0.1:{}/", setup.server_port)
+        .parse()
+        .unwrap();
     // But the HOST header will still be the original one because a client doesn't know the modified URL.
     comm.request.headers_mut().insert(
         header::HOST,
