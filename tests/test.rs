@@ -4,6 +4,7 @@ use std::{
 };
 
 use axum::{
+    http::HeaderValue,
     response::{sse::Event, IntoResponse, Sse},
     routing::get,
     Router,
@@ -295,6 +296,32 @@ async fn test_modify_header() {
     let body = read_body(communication.response.await.unwrap().unwrap().body_mut()).await;
     assert_eq!(String::from_utf8(body).unwrap(), "MODIFIED");
 }
+#[tokio::test]
+async fn test_modify_url() {
+    let app = Router::new().route("/", get(|| async { "Hello, World!" }));
+
+    let mut setup = setup(app).await;
+
+    let response = tokio::spawn(setup.client.get("http://example.com/").send());
+
+    let mut comm = setup.proxy.next().await.unwrap();
+
+    assert_eq!(comm.request.uri().to_string(), "http://example.com/");
+
+    *comm.request.uri_mut() = format!("http://127.0.0.1:{}/", setup.server_port)
+        .parse()
+        .unwrap();
+
+    comm.request_back.send(comm.request).unwrap();
+
+    let response = response.await.unwrap().unwrap();
+
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.bytes().await.unwrap().as_ref(), b"Hello, World!");
+
+    let body = read_body(comm.response.await.unwrap().unwrap().body_mut()).await;
+    assert_eq!(String::from_utf8(body).unwrap(), "Hello, World!");
+}
 
 #[tokio::test]
 async fn test_keep_alive() {
@@ -424,6 +451,14 @@ async fn test_tls_simple() {
             .get(format!("https://127.0.0.1:{}/", setup.server_port))
             .send(),
     );
+
+    let communication = setup.proxy.next().await.unwrap();
+    assert_eq!(communication.request.method(), hyper::Method::CONNECT);
+    communication
+        .request_back
+        .send(communication.request)
+        .unwrap();
+
     let communication = setup.proxy.next().await.unwrap();
     let uri = communication.request.uri().clone();
     let headers = communication.request.headers().clone();
@@ -451,10 +486,49 @@ async fn test_tls_simple() {
 }
 
 #[tokio::test]
+async fn test_tls_modify_url() {
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .init();
+    let app = Router::new().route("/", get(|| async { "Hello, World!" }));
+
+    let mut setup = setup_tls(app, false).await;
+
+    let response = tokio::spawn(setup.client.get("https://example.com/").send());
+
+    let mut comm = setup.proxy.next().await.unwrap();
+    assert_eq!(comm.request.method(), hyper::Method::CONNECT);
+    assert_eq!(comm.request.uri().to_string(), "example.com:443");
+    *comm.request.uri_mut() = format!("127.0.0.1:{}", setup.server_port).parse().unwrap();
+    comm.request_back.send(comm.request).unwrap();
+
+    let mut comm = setup.proxy.next().await.unwrap();
+    // When you modified the URL of CONNECT method, subsequent requests will refers to the modified URL because request UTL other that path and query are inserted by this library.
+    assert_eq!(
+        comm.request.uri().to_string(),
+        format!("https://127.0.0.1:{}/", setup.server_port)
+    );
+    // But the HOST header will still be the original one because a client doesn't know the modified URL.
+    comm.request.headers_mut().insert(
+        header::HOST,
+        HeaderValue::from_bytes(format!("127.0.0.1:{}", setup.server_port).as_bytes()).unwrap(),
+    );
+    comm.request_back.send(comm.request).unwrap();
+
+    let response = response.await.unwrap().unwrap();
+
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.bytes().await.unwrap().as_ref(), b"Hello, World!");
+
+    let body = read_body(comm.response.await.unwrap().unwrap().body_mut()).await;
+    assert_eq!(String::from_utf8(body).unwrap(), "Hello, World!");
+}
+
+#[tokio::test]
 async fn test_tls_simple_tunnel() {
     let app = Router::new().route("/", get(|| async { "Hello, World!" }));
 
-    let setup: Setup<Incoming> = setup_tls(app, true).await;
+    let mut setup: Setup<Incoming> = setup_tls(app, true).await;
 
     let response = tokio::spawn(
         setup
@@ -462,6 +536,10 @@ async fn test_tls_simple_tunnel() {
             .get(format!("https://127.0.0.1:{}/", setup.server_port))
             .send(),
     );
+
+    let comm = setup.proxy.next().await.unwrap();
+    assert_eq!(comm.request.method(), hyper::Method::CONNECT);
+    comm.request_back.send(comm.request).unwrap();
 
     let response = response.await.unwrap().unwrap();
     assert_eq!(response.status(), 200);
@@ -474,14 +552,30 @@ async fn test_tls_keep_alive() {
 
     let mut setup = setup_tls(app, false).await;
 
-    // reqwest wii use single connection with keep-alive
-    for _ in 0..16 {
-        tokio::spawn(
-            setup
-                .client
+    let client = setup.client.clone();
+
+    tokio::spawn(async move {
+        for _ in 0..16 {
+            let res = client
                 .get(format!("https://127.0.0.1:{}/", setup.server_port))
-                .send(),
-        );
+                .send()
+                .await
+                .unwrap();
+
+            assert_eq!(res.bytes().await.unwrap(), &b"Hello, World!"[..]);
+        }
+    });
+
+    // reqwest wii use single connection with keep-alive
+    for i in 0..16 {
+        if i == 0 {
+            let communication = setup.proxy.next().await.unwrap();
+            assert_eq!(communication.request.method(), hyper::Method::CONNECT);
+            communication
+                .request_back
+                .send(communication.request)
+                .unwrap();
+        }
 
         let communication = setup.proxy.next().await.unwrap();
         let uri = communication.request.uri().clone();
@@ -525,6 +619,13 @@ async fn test_tls_sse() {
     );
 
     let communication = setup.proxy.next().await.unwrap();
+    assert_eq!(communication.request.method(), hyper::Method::CONNECT);
+    communication
+        .request_back
+        .send(communication.request)
+        .unwrap();
+
+    let communication = setup.proxy.next().await.unwrap();
     communication
         .request_back
         .send(communication.request)
@@ -550,6 +651,10 @@ async fn test_tls_upgrade() {
             .header(reqwest::header::CONNECTION, "Upgrade")
             .send(),
     );
+
+    let comm = setup.proxy.next().await.unwrap();
+    assert_eq!(comm.request.method(), hyper::Method::CONNECT);
+    comm.request_back.send(comm.request).unwrap();
 
     let comm = setup.proxy.next().await.unwrap();
     comm.request_back.send(comm.request).unwrap();
