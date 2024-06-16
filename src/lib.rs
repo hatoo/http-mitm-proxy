@@ -155,7 +155,7 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
 
     async fn proxy<B>(
         proxy: Arc<MitmProxyImpl<C>>,
-        req: Request<hyper::body::Incoming>,
+        mut req: Request<hyper::body::Incoming>,
         tx: UnboundedSender<Communication<B>>,
         client_addr: std::net::SocketAddr,
     ) -> Result<Response<BoxBody<Bytes, Arc<hyper::Error>>>, hyper::Error>
@@ -164,6 +164,16 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
         B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
     {
         let original_uri = req.uri().clone();
+        if req.method() == Method::CONNECT {
+            // https
+            let mut parts = req.uri().clone().into_parts();
+            parts.scheme = Some(hyper::http::uri::Scheme::HTTPS);
+            // Dummy path, to avoid error
+            parts.path_and_query = Some(hyper::http::uri::PathAndQuery::from_static("/"));
+
+            *req.uri_mut() = Uri::from_parts(parts).unwrap();
+        }
+        dbg!("here");
         let (req_back_tx, req_back_rx) = futures::channel::oneshot::channel();
         let (res_tx, res_rx) = futures::channel::oneshot::channel();
         let (upgrade_tx, upgrade_rx) = futures::channel::oneshot::channel();
@@ -232,21 +242,38 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
                         tracing::error!("Failed to connect to {}", authority);
                         return;
                     };
-                    let Ok(server) = proxy.tls_connector.connect(&host, server).await else {
-                        tracing::error!("Failed to handshake TLS to {}", host);
-                        return;
-                    };
-                    let Ok((sender, conn)) = client::conn::http1::Builder::new()
-                        .preserve_header_case(true)
-                        .title_case_headers(true)
-                        .handshake(TokioIo::new(server))
-                        .await
-                    else {
-                        tracing::error!("Failed to handshake HTTP to {}", host);
-                        return;
-                    };
+                    dbg!("here");
+                    let sender = if uri.scheme() == Some(&hyper::http::uri::Scheme::HTTPS) {
+                        let Ok(server) = proxy.tls_connector.connect(&host, server).await else {
+                            tracing::error!("Failed to handshake TLS to {}", host);
+                            return;
+                        };
+                        let Ok((sender, conn)) = client::conn::http1::Builder::new()
+                            .preserve_header_case(true)
+                            .title_case_headers(true)
+                            .handshake(TokioIo::new(server))
+                            .await
+                        else {
+                            tracing::error!("Failed to handshake HTTP to {}", host);
+                            return;
+                        };
 
-                    tokio::spawn(conn.with_upgrades());
+                        tokio::spawn(conn.with_upgrades());
+                        sender
+                    } else {
+                        let Ok((sender, conn)) = client::conn::http1::Builder::new()
+                            .preserve_header_case(true)
+                            .title_case_headers(true)
+                            .handshake(TokioIo::new(server))
+                            .await
+                        else {
+                            tracing::error!("Failed to handshake HTTP to {}", host);
+                            return;
+                        };
+
+                        tokio::spawn(conn.with_upgrades());
+                        sender
+                    };
 
                     let sender = Arc::new(Mutex::new(sender));
                     let _ = server::conn::http1::Builder::new()

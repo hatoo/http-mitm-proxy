@@ -498,8 +498,10 @@ async fn test_tls_modify_url() {
 
     let mut comm = setup.proxy.next().await.unwrap();
     assert_eq!(comm.request.method(), hyper::Method::CONNECT);
-    assert_eq!(comm.request.uri().to_string(), "example.com:443");
-    *comm.request.uri_mut() = format!("127.0.0.1:{}", setup.server_port).parse().unwrap();
+    assert_eq!(comm.request.uri().to_string(), "https://example.com:443/");
+    *comm.request.uri_mut() = format!("https://127.0.0.1:{}/", setup.server_port)
+        .parse()
+        .unwrap();
     comm.request_back.send(comm.request).unwrap();
 
     let mut comm = setup.proxy.next().await.unwrap();
