@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use axum::{routing::get, Router};
 use clap::{Args, Parser};
 use futures::StreamExt;
 use http_mitm_proxy::MitmProxy;
@@ -41,6 +42,14 @@ fn make_root_cert() -> rcgen::CertifiedKey {
 #[tokio::main]
 async fn main() {
     let opt = Opt::parse();
+
+    let port = 3333;
+
+    let app = Router::new().route("/", get(|| async { "Hello, World!" }));
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
+        .await
+        .unwrap();
+    tokio::spawn(async { axum::serve(listener, app).await });
 
     let root_cert = if let Some(external_cert) = opt.external_cert {
         // Use existing key
@@ -93,29 +102,20 @@ async fn main() {
 
         let original_url = req.uri().clone();
 
-        // Forward connection from dev.example to example.com
+        // Forward connection from http/https dev.example to http://127.0.0.1:3333
         if req.uri().host() == Some("dev.example") {
             req.headers_mut().insert(
                 hyper::header::HOST,
-                hyper::header::HeaderValue::from_static("example.com"),
+                hyper::header::HeaderValue::from_static("127.0.0.1"),
             );
 
-            // Rename the host to example.com
             let mut parts = req.uri().clone().into_parts();
-            let authority = parts.authority.unwrap();
-            parts.authority = if let Some(port) = authority.port() {
-                Some(
-                    hyper::http::uri::Authority::from_maybe_shared(
-                        format!("example.com:{}", port).into_bytes(),
-                    )
+            parts.scheme = Some(hyper::http::uri::Scheme::HTTP);
+            parts.authority = Some(
+                hyper::http::uri::Authority::from_maybe_shared(format!("127.0.0.1:{}", port))
                     .unwrap(),
-                )
-            } else {
-                Some(hyper::http::uri::Authority::from_static(
-                    "example.com".into(),
-                ))
-            };
-            *req.uri_mut() = hyper::http::Uri::from_parts(parts).unwrap();
+            );
+            *req.uri_mut() = hyper::Uri::from_parts(parts).unwrap();
         }
 
         let uri = req.uri().clone();
