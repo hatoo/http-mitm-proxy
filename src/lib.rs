@@ -173,7 +173,6 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
 
             *req.uri_mut() = Uri::from_parts(parts).unwrap();
         }
-        dbg!("here");
         let (req_back_tx, req_back_rx) = futures::channel::oneshot::channel();
         let (res_tx, res_rx) = futures::channel::oneshot::channel();
         let (upgrade_tx, upgrade_rx) = futures::channel::oneshot::channel();
@@ -242,7 +241,6 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
                         tracing::error!("Failed to connect to {}", authority);
                         return;
                     };
-                    dbg!("here");
                     let sender = if uri.scheme() == Some(&hyper::http::uri::Scheme::HTTPS) {
                         let Ok(server) = proxy.tls_connector.connect(&host, server).await else {
                             tracing::error!("Failed to handshake TLS to {}", host);
@@ -382,20 +380,42 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
                 tracing::error!("Bad request: {}, Reason: Invalid Host", req.uri());
                 return Ok(no_body(StatusCode::BAD_REQUEST));
             };
-            let port = req.uri().port_u16().unwrap_or(80);
+            let port = req.uri().port_u16().unwrap_or(
+                if req.uri().scheme() == Some(&hyper::http::uri::Scheme::HTTPS) {
+                    443
+                } else {
+                    80
+                },
+            );
 
             let Ok(stream) = TcpStream::connect((host, port)).await else {
                 tracing::error!("Failed to connect to {}", req.uri());
                 return Ok(no_body(StatusCode::BAD_GATEWAY));
             };
 
-            let (mut sender, conn) = client::conn::http1::Builder::new()
-                .preserve_header_case(true)
-                .title_case_headers(true)
-                .handshake(TokioIo::new(stream))
-                .await?;
+            let mut sender = if req.uri().scheme() == Some(&hyper::http::uri::Scheme::HTTPS) {
+                let Ok(stream) = proxy.tls_connector.connect(&host, stream).await else {
+                    return Ok(no_body(StatusCode::INTERNAL_SERVER_ERROR));
+                };
+                let (sender, conn) = client::conn::http1::Builder::new()
+                    .preserve_header_case(true)
+                    .title_case_headers(true)
+                    .handshake(TokioIo::new(stream))
+                    .await?;
 
-            tokio::spawn(conn.with_upgrades());
+                tokio::spawn(conn.with_upgrades());
+                sender
+            } else {
+                let (sender, conn) = client::conn::http1::Builder::new()
+                    .preserve_header_case(true)
+                    .title_case_headers(true)
+                    .handshake(TokioIo::new(stream))
+                    .await?;
+
+                tokio::spawn(conn.with_upgrades());
+                sender
+            };
+
             remove_authority(&mut req);
 
             let (req, req_parts) = dup_request(req);

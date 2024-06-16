@@ -92,18 +92,28 @@ struct Setup<B> {
     client: Client,
 }
 
-async fn setup<B>(app: Router) -> Setup<B>
+async fn setup<B>(app: Router, https_server: bool) -> Setup<B>
 where
     B: Body<Data = Bytes> + Send + 'static,
     B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
-    let (server_port, server) = bind_app(app).await;
-
-    tokio::spawn(server);
+    let server_port = if https_server {
+        let (p, s) = bind_app_tls(app).await;
+        tokio::spawn(s);
+        p
+    } else {
+        let (p, s) = bind_app(app).await;
+        tokio::spawn(s);
+        p
+    };
 
     let proxy = http_mitm_proxy::MitmProxy::<&'static rcgen::CertifiedKey>::new(
         None,
-        tokio_native_tls::native_tls::TlsConnector::new().unwrap(),
+        tokio_native_tls::native_tls::TlsConnector::builder()
+            .danger_accept_invalid_certs(true)
+            .danger_accept_invalid_hostnames(true)
+            .build()
+            .unwrap(),
     );
     let proxy_port = get_port();
 
@@ -141,14 +151,20 @@ fn root_cert() -> rcgen::CertifiedKey {
     rcgen::CertifiedKey { cert, key_pair }
 }
 
-async fn setup_tls<B>(app: Router, without_cert: bool) -> Setup<B>
+async fn setup_tls<B>(app: Router, without_cert: bool, http_server: bool) -> Setup<B>
 where
     B: Body<Data = Bytes> + Send + 'static,
     B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
-    let (server_port, server) = bind_app_tls(app).await;
-
-    tokio::spawn(server);
+    let server_port = if http_server {
+        let (p, s) = bind_app(app).await;
+        tokio::spawn(s);
+        p
+    } else {
+        let (p, s) = bind_app_tls(app).await;
+        tokio::spawn(s);
+        p
+    };
 
     let root_cert = root_cert();
     let root_cert_der = root_cert.cert.der().to_vec();
@@ -209,7 +225,7 @@ async fn read_body(
 async fn test_simple() {
     let app = Router::new().route("/", get(|| async { "Hello, World!" }));
 
-    let mut setup = setup(app).await;
+    let mut setup = setup(app, false).await;
 
     let response = tokio::spawn(
         setup
@@ -258,7 +274,7 @@ async fn test_modify_header() {
         }),
     );
 
-    let mut setup = setup(app).await;
+    let mut setup = setup(app, false).await;
 
     let response = tokio::spawn(
         setup
@@ -300,7 +316,7 @@ async fn test_modify_header() {
 async fn test_modify_url() {
     let app = Router::new().route("/", get(|| async { "Hello, World!" }));
 
-    let mut setup = setup(app).await;
+    let mut setup = setup(app, false).await;
 
     let response = tokio::spawn(setup.client.get("http://example.com/").send());
 
@@ -324,10 +340,37 @@ async fn test_modify_url() {
 }
 
 #[tokio::test]
+async fn test_modify_url_https() {
+    let app = Router::new().route("/", get(|| async { "Hello, World!" }));
+
+    let mut setup = setup(app, true).await;
+
+    let response = tokio::spawn(setup.client.get("http://example.com/").send());
+
+    let mut comm = setup.proxy.next().await.unwrap();
+
+    assert_eq!(comm.request.uri().to_string(), "http://example.com/");
+
+    *comm.request.uri_mut() = format!("https://127.0.0.1:{}/", setup.server_port)
+        .parse()
+        .unwrap();
+
+    comm.request_back.send(comm.request).unwrap();
+
+    let response = response.await.unwrap().unwrap();
+
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.bytes().await.unwrap().as_ref(), b"Hello, World!");
+
+    let body = read_body(comm.response.await.unwrap().unwrap().body_mut()).await;
+    assert_eq!(String::from_utf8(body).unwrap(), "Hello, World!");
+}
+
+#[tokio::test]
 async fn test_keep_alive() {
     let app = Router::new().route("/", get(|| async { "Hello, World!" }));
 
-    let mut setup = setup(app).await;
+    let mut setup = setup(app, false).await;
 
     // reqwest wii use single connection with keep-alive
     for _ in 0..16 {
@@ -371,7 +414,7 @@ async fn test_sse() {
         }),
     );
 
-    let mut setup = setup(app).await;
+    let mut setup = setup(app, false).await;
     tokio::spawn(
         setup
             .client
@@ -395,7 +438,7 @@ async fn test_sse() {
 #[tokio::test]
 async fn test_upgrade() {
     let app = Router::new().route("/upgrade", get(upgrade_handler));
-    let mut setup = setup(app).await;
+    let mut setup = setup(app, false).await;
 
     let res = tokio::spawn(
         setup
@@ -443,7 +486,7 @@ async fn upgrade_handler<B: Send + 'static>(req: axum::http::Request<B>) -> impl
 async fn test_tls_simple() {
     let app = Router::new().route("/", get(|| async { "Hello, World!" }));
 
-    let mut setup = setup_tls(app, false).await;
+    let mut setup = setup_tls(app, false, false).await;
 
     let response = tokio::spawn(
         setup
@@ -492,7 +535,7 @@ async fn test_tls_modify_url() {
         .init();
     let app = Router::new().route("/", get(|| async { "Hello, World!" }));
 
-    let mut setup = setup_tls(app, false).await;
+    let mut setup = setup_tls(app, false, false).await;
 
     let response = tokio::spawn(setup.client.get("https://example.com/").send());
 
@@ -526,10 +569,47 @@ async fn test_tls_modify_url() {
 }
 
 #[tokio::test]
+async fn test_tls_modify_url_http() {
+    let app = Router::new().route("/", get(|| async { "Hello, World!" }));
+
+    let mut setup = setup_tls(app, false, true).await;
+
+    let response = tokio::spawn(setup.client.get("https://example.com/").send());
+
+    let mut comm = setup.proxy.next().await.unwrap();
+    assert_eq!(comm.request.method(), hyper::Method::CONNECT);
+    assert_eq!(comm.request.uri().to_string(), "https://example.com:443/");
+    *comm.request.uri_mut() = format!("http://127.0.0.1:{}/", setup.server_port)
+        .parse()
+        .unwrap();
+    comm.request_back.send(comm.request).unwrap();
+
+    let mut comm = setup.proxy.next().await.unwrap();
+    assert_eq!(comm.request.uri().to_string(), "https://example.com:443/");
+    *comm.request.uri_mut() = format!("http://127.0.0.1:{}/", setup.server_port)
+        .parse()
+        .unwrap();
+    // But the HOST header will still be the original one because a client doesn't know the modified URL.
+    comm.request.headers_mut().insert(
+        header::HOST,
+        HeaderValue::from_bytes(format!("127.0.0.1:{}", setup.server_port).as_bytes()).unwrap(),
+    );
+    comm.request_back.send(comm.request).unwrap();
+
+    let response = response.await.unwrap().unwrap();
+
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.bytes().await.unwrap().as_ref(), b"Hello, World!");
+
+    let body = read_body(comm.response.await.unwrap().unwrap().body_mut()).await;
+    assert_eq!(String::from_utf8(body).unwrap(), "Hello, World!");
+}
+
+#[tokio::test]
 async fn test_tls_simple_tunnel() {
     let app = Router::new().route("/", get(|| async { "Hello, World!" }));
 
-    let mut setup: Setup<Incoming> = setup_tls(app, true).await;
+    let mut setup: Setup<Incoming> = setup_tls(app, true, false).await;
 
     let response = tokio::spawn(
         setup
@@ -551,7 +631,7 @@ async fn test_tls_simple_tunnel() {
 async fn test_tls_keep_alive() {
     let app = Router::new().route("/", get(|| async { "Hello, World!" }));
 
-    let mut setup = setup_tls(app, false).await;
+    let mut setup = setup_tls(app, false, false).await;
 
     let client = setup.client.clone();
 
@@ -611,7 +691,7 @@ async fn test_tls_sse() {
         }),
     );
 
-    let mut setup = setup_tls(app, false).await;
+    let mut setup = setup_tls(app, false, false).await;
     tokio::spawn(
         setup
             .client
@@ -642,7 +722,7 @@ async fn test_tls_sse() {
 #[tokio::test]
 async fn test_tls_upgrade() {
     let app = Router::new().route("/upgrade", get(upgrade_handler));
-    let mut setup = setup_tls(app, false).await;
+    let mut setup = setup_tls(app, false, false).await;
 
     let res = tokio::spawn(
         setup
