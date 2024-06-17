@@ -19,7 +19,6 @@ use tls::server_config;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream, ToSocketAddrs},
-    sync::Mutex,
 };
 
 pub use futures;
@@ -237,43 +236,6 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
                         return;
                     };
 
-                    let Ok(server) = TcpStream::connect(authority.as_str()).await else {
-                        tracing::error!("Failed to connect to {}", authority);
-                        return;
-                    };
-                    let sender = if uri.scheme() == Some(&hyper::http::uri::Scheme::HTTPS) {
-                        let Ok(server) = proxy.tls_connector.connect(&host, server).await else {
-                            tracing::error!("Failed to handshake TLS to {}", host);
-                            return;
-                        };
-                        let Ok((sender, conn)) = client::conn::http1::Builder::new()
-                            .preserve_header_case(true)
-                            .title_case_headers(true)
-                            .handshake(TokioIo::new(server))
-                            .await
-                        else {
-                            tracing::error!("Failed to handshake HTTP to {}", host);
-                            return;
-                        };
-
-                        tokio::spawn(conn.with_upgrades());
-                        sender
-                    } else {
-                        let Ok((sender, conn)) = client::conn::http1::Builder::new()
-                            .preserve_header_case(true)
-                            .title_case_headers(true)
-                            .handshake(TokioIo::new(server))
-                            .await
-                        else {
-                            tracing::error!("Failed to handshake HTTP to {}", host);
-                            return;
-                        };
-
-                        tokio::spawn(conn.with_upgrades());
-                        sender
-                    };
-
-                    let sender = Arc::new(Mutex::new(sender));
                     let _ = server::conn::http1::Builder::new()
                         .preserve_header_case(true)
                         .title_case_headers(true)
@@ -281,8 +243,10 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
                             TokioIo::new(client),
                             service_fn(move |mut req| {
                                 let original_authority = original_authority.clone();
-                                let sender = sender.clone();
                                 let tx = tx.clone();
+                                let authority = authority.clone();
+                                let host = host.clone();
+                                let proxy = proxy.clone();
 
                                 async move {
                                     let (req_back_tx, req_back_rx) =
@@ -305,24 +269,70 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
                                             StatusCode::INTERNAL_SERVER_ERROR,
                                         ));
                                     };
+
+                                    let host = req.uri().host().map(str::to_string).unwrap_or(host);
+                                    let authority =
+                                        req.uri().authority().cloned().unwrap_or(authority);
+                                    let Ok(server) = TcpStream::connect(authority.as_str()).await
+                                    else {
+                                        tracing::error!("Failed to connect to {}", authority);
+                                        return Ok(no_body(StatusCode::BAD_REQUEST));
+                                    };
+                                    let mut sender = if req.uri().scheme()
+                                        == Some(&hyper::http::uri::Scheme::HTTPS)
+                                    {
+                                        let Ok(server) =
+                                            proxy.tls_connector.connect(&host, server).await
+                                        else {
+                                            tracing::error!("Failed to handshake TLS to {}", host);
+                                            return Ok(no_body(StatusCode::BAD_REQUEST));
+                                        };
+                                        let Ok((sender, conn)) =
+                                            client::conn::http1::Builder::new()
+                                                .preserve_header_case(true)
+                                                .title_case_headers(true)
+                                                .handshake(TokioIo::new(server))
+                                                .await
+                                        else {
+                                            tracing::error!("Failed to handshake HTTP to {}", host);
+                                            return Ok(no_body(StatusCode::BAD_REQUEST));
+                                        };
+
+                                        tokio::spawn(conn.with_upgrades());
+                                        sender
+                                    } else {
+                                        let Ok((sender, conn)) =
+                                            client::conn::http1::Builder::new()
+                                                .preserve_header_case(true)
+                                                .title_case_headers(true)
+                                                .handshake(TokioIo::new(server))
+                                                .await
+                                        else {
+                                            tracing::error!("Failed to handshake HTTP to {}", host);
+                                            return Ok(no_body(StatusCode::BAD_REQUEST));
+                                        };
+
+                                        tokio::spawn(conn.with_upgrades());
+                                        sender
+                                    };
+
                                     remove_authority(&mut req);
 
                                     let (req, req_parts) = dup_request(req);
-                                    let (res, res_upgrade) =
-                                        match sender.lock().await.send_request(req).await {
-                                            Ok(res) => {
-                                                let (res, res_upgrade, res_middleman) =
-                                                    dup_response(res);
-                                                let _ = res_tx.send(Ok(res_middleman));
-                                                (res, res_upgrade)
-                                            }
-                                            Err(err) => {
-                                                let _ = res_tx.send(Err(err));
-                                                return Ok::<_, hyper::Error>(no_body(
-                                                    StatusCode::INTERNAL_SERVER_ERROR,
-                                                ));
-                                            }
-                                        };
+                                    let (res, res_upgrade) = match sender.send_request(req).await {
+                                        Ok(res) => {
+                                            let (res, res_upgrade, res_middleman) =
+                                                dup_response(res);
+                                            let _ = res_tx.send(Ok(res_middleman));
+                                            (res, res_upgrade)
+                                        }
+                                        Err(err) => {
+                                            let _ = res_tx.send(Err(err));
+                                            return Ok::<_, hyper::Error>(no_body(
+                                                StatusCode::INTERNAL_SERVER_ERROR,
+                                            ));
+                                        }
+                                    };
 
                                     if res.status() == StatusCode::SWITCHING_PROTOCOLS {
                                         tokio::task::spawn(async move {
