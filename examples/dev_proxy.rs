@@ -106,7 +106,8 @@ async fn main() {
         if req.uri().host() == Some("dev.example") {
             req.headers_mut().insert(
                 hyper::header::HOST,
-                hyper::header::HeaderValue::from_static("127.0.0.1"),
+                hyper::header::HeaderValue::from_maybe_shared(format!("127.0.0.1:{}", port))
+                    .unwrap(),
             );
 
             let mut parts = req.uri().clone().into_parts();
