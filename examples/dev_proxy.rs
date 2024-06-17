@@ -102,17 +102,30 @@ async fn main() {
 
         let original_url = req.uri().clone();
 
-        // Forward connection from http/https dev.example to http://127.0.0.1:3333
-        if req.uri().host() == Some("dev.example") {
+        // Forward connection from http/https www.marscode.com/ide/ to http://127.0.0.1:3333
+        if req.uri().host() == Some("www.marscode.com")
+            && req.method() != hyper::Method::CONNECT
+            && req.uri().path().starts_with("/ide/")
+        {
             req.headers_mut().insert(
                 hyper::header::HOST,
-                hyper::header::HeaderValue::from_static("127.0.0.1"),
+                hyper::header::HeaderValue::from_maybe_shared(format!("127.0.0.1:{}", port))
+                    .unwrap(),
             );
 
             let mut parts = req.uri().clone().into_parts();
             parts.scheme = Some(hyper::http::uri::Scheme::HTTP);
             parts.authority = Some(
                 hyper::http::uri::Authority::from_maybe_shared(format!("127.0.0.1:{}", port))
+                    .unwrap(),
+            );
+            parts.path_and_query = Some(
+                parts
+                    .path_and_query
+                    .unwrap()
+                    .to_string()
+                    .trim_start_matches("/ide")
+                    .parse()
                     .unwrap(),
             );
             *req.uri_mut() = hyper::Uri::from_parts(parts).unwrap();
