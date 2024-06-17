@@ -539,12 +539,9 @@ async fn test_tls_modify_url() {
 
     let response = tokio::spawn(setup.client.get("https://example.com/").send());
 
-    let mut comm = setup.proxy.next().await.unwrap();
+    let comm = setup.proxy.next().await.unwrap();
     assert_eq!(comm.request.method(), hyper::Method::CONNECT);
-    assert_eq!(comm.request.uri().to_string(), "https://example.com:443/");
-    *comm.request.uri_mut() = format!("https://127.0.0.1:{}/", setup.server_port)
-        .parse()
-        .unwrap();
+    assert_eq!(comm.request.uri().to_string(), "example.com:443");
     comm.request_back.send(comm.request).unwrap();
 
     let mut comm = setup.proxy.next().await.unwrap();
@@ -576,12 +573,9 @@ async fn test_tls_modify_url_http() {
 
     let response = tokio::spawn(setup.client.get("https://example.com/").send());
 
-    let mut comm = setup.proxy.next().await.unwrap();
+    let comm = setup.proxy.next().await.unwrap();
     assert_eq!(comm.request.method(), hyper::Method::CONNECT);
-    assert_eq!(comm.request.uri().to_string(), "https://example.com:443/");
-    *comm.request.uri_mut() = format!("http://127.0.0.1:{}/", setup.server_port)
-        .parse()
-        .unwrap();
+    assert_eq!(comm.request.uri().to_string(), "example.com:443");
     comm.request_back.send(comm.request).unwrap();
 
     let mut comm = setup.proxy.next().await.unwrap();

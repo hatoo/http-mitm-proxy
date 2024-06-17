@@ -154,7 +154,7 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
 
     async fn proxy<B>(
         proxy: Arc<MitmProxyImpl<C>>,
-        mut req: Request<hyper::body::Incoming>,
+        req: Request<hyper::body::Incoming>,
         tx: UnboundedSender<Communication<B>>,
         client_addr: std::net::SocketAddr,
     ) -> Result<Response<BoxBody<Bytes, Arc<hyper::Error>>>, hyper::Error>
@@ -163,15 +163,6 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
         B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
     {
         let original_uri = req.uri().clone();
-        if req.method() == Method::CONNECT {
-            // https
-            let mut parts = req.uri().clone().into_parts();
-            parts.scheme = Some(hyper::http::uri::Scheme::HTTPS);
-            // Dummy path, to avoid error
-            parts.path_and_query = Some(hyper::http::uri::PathAndQuery::from_static("/"));
-
-            *req.uri_mut() = Uri::from_parts(parts).unwrap();
-        }
         let (req_back_tx, req_back_rx) = futures::channel::oneshot::channel();
         let (res_tx, res_rx) = futures::channel::oneshot::channel();
         let (upgrade_tx, upgrade_rx) = futures::channel::oneshot::channel();
@@ -190,28 +181,15 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
         };
 
         if req.method() == Method::CONNECT {
+            // Modified CONNECT request is ignored
             // HTTPS connection
-            let uri = req.uri().clone();
+            let uri = original_uri;
             let Some(authority) = uri.authority().cloned() else {
                 tracing::error!("Bad CONNECT request: {}, Reason: Invalid Authority", uri);
                 return Ok(no_body(StatusCode::BAD_REQUEST));
             };
-            let Some(original_authority) = original_uri.authority().cloned() else {
-                tracing::error!(
-                    "Bad CONNECT request: {}, Reason: Invalid Authority",
-                    original_uri
-                );
-                return Ok(no_body(StatusCode::BAD_REQUEST));
-            };
             let Some(host) = uri.host().map(str::to_string) else {
                 tracing::error!("Bad CONNECT request: {}, Reason: Invalid Host", uri);
-                return Ok(no_body(StatusCode::BAD_REQUEST));
-            };
-            let Some(original_host) = original_uri.host().map(str::to_string) else {
-                tracing::error!(
-                    "Bad CONNECT request: {}, Reason: Invalid Host",
-                    original_uri
-                );
                 return Ok(no_body(StatusCode::BAD_REQUEST));
             };
             tokio::spawn(async move {
@@ -223,9 +201,9 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
                 if let Some(root_cert) = proxy.root_cert.as_ref() {
                     let Ok(server_config) =
                         // Even if URL is modified by middleman, we should sign with original host name to communicate client.
-                        server_config(original_host.to_string(), root_cert.borrow())
+                        server_config(host.to_string(), root_cert.borrow())
                     else {
-                        tracing::error!("Failed to create server config for {}", original_host);
+                        tracing::error!("Failed to create server config for {}", host);
                         return;
                     };
                     // TODO: Cache server_config
@@ -242,7 +220,6 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
                         .serve_connection(
                             TokioIo::new(client),
                             service_fn(move |mut req| {
-                                let original_authority = original_authority.clone();
                                 let tx = tx.clone();
                                 let authority = authority.clone();
                                 let host = host.clone();
@@ -255,7 +232,7 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
                                     let (upgrade_tx, upgrade_rx) =
                                         futures::channel::oneshot::channel();
 
-                                    inject_authority(&mut req, original_authority);
+                                    inject_authority(&mut req, authority.clone());
                                     let _ = tx.unbounded_send(Communication {
                                         client_addr,
                                         request: req,
