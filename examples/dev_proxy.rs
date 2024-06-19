@@ -123,23 +123,25 @@ async fn main() {
 
         let _ = comm.request_back.send(req);
         if let Ok(Ok(mut response)) = comm.response.await {
-            let mut len = 0;
-            let body = response.body_mut();
-            while let Some(frame) = body.next().await {
-                if let Ok(frame) = frame {
-                    if let Some(data) = frame.data_ref() {
-                        len += data.len();
+            tokio::spawn(async move {
+                let mut len = 0;
+                let body = response.body_mut();
+                while let Some(frame) = body.next().await {
+                    if let Ok(frame) = frame {
+                        if let Some(data) = frame.data_ref() {
+                            len += data.len();
+                        }
                     }
                 }
-            }
-            println!(
-                "{}\t{} -> {}\t{}\t{}",
-                comm.client_addr,
-                original_url,
-                uri,
-                response.status(),
-                len
-            );
+                println!(
+                    "{}\t{} -> {}\t{}\t{}",
+                    comm.client_addr,
+                    original_url,
+                    uri,
+                    response.status(),
+                    len
+                );
+            });
         }
     }
 }

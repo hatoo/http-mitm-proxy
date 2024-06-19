@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use clap::{Args, Parser};
 use futures::StreamExt;
 use http_mitm_proxy::MitmProxy;
+use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
 struct Opt {
@@ -42,7 +43,9 @@ fn make_root_cert() -> rcgen::CertifiedKey {
 async fn main() {
     let opt = Opt::parse();
 
-    tracing_subscriber::fmt().init();
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::from_default_env())
+        .init();
 
     let root_cert = if let Some(external_cert) = opt.external_cert {
         // Use existing key
