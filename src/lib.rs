@@ -8,8 +8,7 @@ use futures::{
 use http_body_util::{combinators::BoxBody, BodyExt, Empty, StreamBody};
 use hyper::{
     body::{Body, Frame, Incoming},
-    client::{self},
-    server::{self},
+    client, header, server,
     service::service_fn,
     Method, Request, Response, StatusCode, Uri,
 };
@@ -216,142 +215,143 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
 
                     dbg!(client.get_ref().1.alpn_protocol());
 
-                    let _ = server::conn::http2::Builder::new(TokioExecutor::new())
-                        // .preserve_header_case(true)
-                        // .title_case_headers(true)
-                        .serve_connection(
-                            TokioIo::new(client),
-                            service_fn(move |mut req| {
-                                let tx = tx.clone();
-                                let authority = authority.clone();
-                                let host = host.clone();
-                                let proxy = proxy.clone();
+                    let f = move |mut req| {
+                        let tx = tx.clone();
+                        let authority = authority.clone();
+                        let host = host.clone();
+                        let proxy = proxy.clone();
 
-                                async move {
-                                    let (req_back_tx, req_back_rx) =
-                                        futures::channel::oneshot::channel();
-                                    let (res_tx, res_rx) = futures::channel::oneshot::channel();
-                                    let (upgrade_tx, upgrade_rx) =
-                                        futures::channel::oneshot::channel();
+                        async move {
+                            let (req_back_tx, req_back_rx) = futures::channel::oneshot::channel();
+                            let (res_tx, res_rx) = futures::channel::oneshot::channel();
+                            let (upgrade_tx, upgrade_rx) = futures::channel::oneshot::channel();
 
-                                    inject_authority(&mut req, authority.clone());
-                                    let _ = tx.unbounded_send(Communication {
-                                        client_addr,
-                                        request: req,
-                                        request_back: req_back_tx,
-                                        response: res_rx,
-                                        upgrade: upgrade_rx,
-                                    });
-                                    let Ok(mut req) = req_back_rx.await else {
-                                        tracing::info!("Request canceled");
-                                        return Ok::<_, hyper::Error>(no_body(
-                                            StatusCode::INTERNAL_SERVER_ERROR,
-                                        ));
-                                    };
+                            inject_authority(&mut req, authority.clone());
+                            let _ = tx.unbounded_send(Communication {
+                                client_addr,
+                                request: req,
+                                request_back: req_back_tx,
+                                response: res_rx,
+                                upgrade: upgrade_rx,
+                            });
+                            let Ok(mut req) = req_back_rx.await else {
+                                tracing::info!("Request canceled");
+                                return Ok::<_, hyper::Error>(no_body(
+                                    StatusCode::INTERNAL_SERVER_ERROR,
+                                ));
+                            };
 
-                                    /*
-                                    let host = req.uri().host().map(str::to_string).unwrap_or(host);
-                                    let authority =
-                                        req.uri().authority().cloned().unwrap_or(authority);
-                                    let Ok(server) = TcpStream::connect(authority.as_str()).await
-                                    else {
-                                        tracing::error!("Failed to connect to {}", authority);
-                                        return Ok(no_body(StatusCode::BAD_REQUEST));
-                                    };
-                                    let mut sender = if req.uri().scheme()
-                                        == Some(&hyper::http::uri::Scheme::HTTPS)
-                                    {
-                                        let Ok(server) =
-                                            proxy.tls_connector.connect(&host, server).await
-                                        else {
-                                            tracing::error!("Failed to handshake TLS to {}", host);
-                                            return Ok(no_body(StatusCode::BAD_REQUEST));
-                                        };
-                                        let Ok((sender, conn)) =
-                                            client::conn::http1::Builder::new()
-                                                .preserve_header_case(true)
-                                                .title_case_headers(true)
-                                                .handshake(TokioIo::new(server))
-                                                .await
-                                        else {
-                                            tracing::error!("Failed to handshake HTTP to {}", host);
-                                            return Ok(no_body(StatusCode::BAD_REQUEST));
-                                        };
+                            /*
+                            let host = req.uri().host().map(str::to_string).unwrap_or(host);
+                            let authority =
+                                req.uri().authority().cloned().unwrap_or(authority);
+                            let Ok(server) = TcpStream::connect(authority.as_str()).await
+                            else {
+                                tracing::error!("Failed to connect to {}", authority);
+                                return Ok(no_body(StatusCode::BAD_REQUEST));
+                            };
+                            let mut sender = if req.uri().scheme()
+                                == Some(&hyper::http::uri::Scheme::HTTPS)
+                            {
+                                let Ok(server) =
+                                    proxy.tls_connector.connect(&host, server).await
+                                else {
+                                    tracing::error!("Failed to handshake TLS to {}", host);
+                                    return Ok(no_body(StatusCode::BAD_REQUEST));
+                                };
+                                let Ok((sender, conn)) =
+                                    client::conn::http1::Builder::new()
+                                        .preserve_header_case(true)
+                                        .title_case_headers(true)
+                                        .handshake(TokioIo::new(server))
+                                        .await
+                                else {
+                                    tracing::error!("Failed to handshake HTTP to {}", host);
+                                    return Ok(no_body(StatusCode::BAD_REQUEST));
+                                };
 
-                                        tokio::spawn(conn.with_upgrades());
-                                        sender
-                                    } else {
-                                        let Ok((sender, conn)) =
-                                            client::conn::http1::Builder::new()
-                                                .preserve_header_case(true)
-                                                .title_case_headers(true)
-                                                .handshake(TokioIo::new(server))
-                                                .await
-                                        else {
-                                            tracing::error!("Failed to handshake HTTP to {}", host);
-                                            return Ok(no_body(StatusCode::BAD_REQUEST));
-                                        };
+                                tokio::spawn(conn.with_upgrades());
+                                sender
+                            } else {
+                                let Ok((sender, conn)) =
+                                    client::conn::http1::Builder::new()
+                                        .preserve_header_case(true)
+                                        .title_case_headers(true)
+                                        .handshake(TokioIo::new(server))
+                                        .await
+                                else {
+                                    tracing::error!("Failed to handshake HTTP to {}", host);
+                                    return Ok(no_body(StatusCode::BAD_REQUEST));
+                                };
 
-                                        tokio::spawn(conn.with_upgrades());
-                                        sender
-                                    };
-                                    */
-                                    let mut sender = proxy.connect(req.uri()).await;
+                                tokio::spawn(conn.with_upgrades());
+                                sender
+                            };
+                            */
+                            let mut sender = proxy.connect(req.uri()).await;
 
-                                    // remove_authority(&mut req);
+                            // remove_authority(&mut req);
 
-                                    let (req, req_parts) = dup_request(req);
-                                    let (res, res_upgrade) = match sender.send_request(req).await {
-                                        Ok(res) => {
-                                            tracing::info!("Response: {:?}", res.status());
-                                            let (res, res_upgrade, res_middleman) =
-                                                dup_response(res);
-                                            let _ = res_tx.send(Ok(res_middleman));
-                                            (res, res_upgrade)
-                                        }
-                                        Err(err) => {
-                                            tracing::error!("Failed to send request: {}", err);
-                                            let _ = res_tx.send(Err(err));
-                                            return Ok::<_, hyper::Error>(no_body(
-                                                StatusCode::INTERNAL_SERVER_ERROR,
-                                            ));
-                                        }
-                                    };
+                            let (req, req_parts) = dup_request(req);
+                            let (res, res_upgrade) = match sender.send_request(req).await {
+                                Ok(res) => {
+                                    tracing::info!("Response: {:?}", res.status());
+                                    let (res, res_upgrade, res_middleman) = dup_response(res);
+                                    let _ = res_tx.send(Ok(res_middleman));
+                                    (res, res_upgrade)
+                                }
+                                Err(err) => {
+                                    tracing::error!("Failed to send request: {}", err);
+                                    let _ = res_tx.send(Err(err));
+                                    return Ok::<_, hyper::Error>(no_body(
+                                        StatusCode::INTERNAL_SERVER_ERROR,
+                                    ));
+                                }
+                            };
 
-                                    if res.status() == StatusCode::SWITCHING_PROTOCOLS {
-                                        tokio::task::spawn(async move {
-                                            if let (Ok(client), Ok(server)) = (
-                                                hyper::upgrade::on(Request::from_parts(
-                                                    req_parts,
-                                                    Empty::<Bytes>::new(),
-                                                ))
-                                                .await,
-                                                hyper::upgrade::on(res_upgrade).await,
-                                            ) {
-                                                let (rx_client, rx_server) = upgrade(
-                                                    TokioIo::new(client),
-                                                    TokioIo::new(server),
-                                                )
+                            if res.status() == StatusCode::SWITCHING_PROTOCOLS {
+                                tokio::task::spawn(async move {
+                                    if let (Ok(client), Ok(server)) = (
+                                        hyper::upgrade::on(Request::from_parts(
+                                            req_parts,
+                                            Empty::<Bytes>::new(),
+                                        ))
+                                        .await,
+                                        hyper::upgrade::on(res_upgrade).await,
+                                    ) {
+                                        let (rx_client, rx_server) =
+                                            upgrade(TokioIo::new(client), TokioIo::new(server))
                                                 .await;
 
-                                                let _ = upgrade_tx.send(Upgrade {
-                                                    client_to_server: rx_client,
-                                                    server_to_client: rx_server,
-                                                });
-                                            } else {
-                                                tracing::error!(
-                                                    "Failed to upgrade connection (HTTPS)"
-                                                );
-                                            }
+                                        let _ = upgrade_tx.send(Upgrade {
+                                            client_to_server: rx_client,
+                                            server_to_client: rx_server,
                                         });
+                                    } else {
+                                        tracing::error!("Failed to upgrade connection (HTTPS)");
                                     }
+                                });
+                            }
 
-                                    Ok(res)
-                                }
-                            }),
-                        )
-                        // .with_upgrades()
-                        .await;
+                            Ok(res)
+                        }
+                    };
+
+                    if client.get_ref().1.alpn_protocol() == Some(b"h2") {
+                        let _ = server::conn::http2::Builder::new(TokioExecutor::new())
+                            // .preserve_header_case(true)
+                            // .title_case_headers(true)
+                            .serve_connection(TokioIo::new(client), service_fn(f))
+                            // .with_upgrades()
+                            .await;
+                    } else {
+                        let _ = server::conn::http1::Builder::new()
+                            .preserve_header_case(true)
+                            .title_case_headers(true)
+                            .serve_connection(TokioIo::new(client), service_fn(f))
+                            .with_upgrades()
+                            .await;
+                    }
                 } else {
                     let Ok(mut server) =
                         TcpStream::connect(uri.authority().unwrap().as_str()).await
@@ -413,7 +413,7 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
             */
             let mut sender = proxy.connect(req.uri()).await;
 
-            remove_authority(&mut req);
+            // remove_authority(&mut req);
 
             let (req, req_parts) = dup_request(req);
             let (status, res, res_upgrade) = match sender.send_request(req).await {
@@ -464,11 +464,20 @@ impl<B> SendRequest<B>
 where
     B: Body + 'static,
 {
-    async fn send_request(&mut self, req: Request<B>) -> Result<Response<Incoming>, hyper::Error> {
+    async fn send_request(
+        &mut self,
+        mut req: Request<B>,
+    ) -> Result<Response<Incoming>, hyper::Error> {
         dbg!(req.method());
         match self {
-            SendRequest::Http1(sender) => sender.send_request(req).await,
-            SendRequest::Http2(sender) => sender.send_request(req).await,
+            SendRequest::Http1(sender) => {
+                remove_authority(&mut req);
+                sender.send_request(req).await
+            }
+            SendRequest::Http2(sender) => {
+                req.headers_mut().remove(header::HOST);
+                sender.send_request(req).await
+            }
         }
     }
 }
