@@ -13,7 +13,7 @@ use hyper::{
     service::service_fn,
     Method, Request, Response, StatusCode, Uri,
 };
-use hyper_util::rt::TokioIo;
+use hyper_util::rt::{TokioExecutor, TokioIo};
 use std::{borrow::Borrow, future::Future, sync::Arc};
 use tls::server_config;
 use tokio::{
@@ -439,6 +439,79 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
                 });
             }
             Ok(res)
+        }
+    }
+}
+
+enum SendRequest<B> {
+    Http1(hyper::client::conn::http1::SendRequest<B>),
+    Http2(hyper::client::conn::http2::SendRequest<B>),
+}
+
+impl<B> SendRequest<B>
+where
+    B: Body + 'static,
+{
+    async fn send_request(&mut self, req: Request<B>) -> Result<Response<Incoming>, hyper::Error> {
+        match self {
+            SendRequest::Http1(sender) => sender.send_request(req).await,
+            SendRequest::Http2(sender) => sender.send_request(req).await,
+        }
+    }
+}
+
+impl<C> MitmProxyImpl<C> {
+    async fn connect<B>(&self, uri: Uri) -> SendRequest<B>
+    where
+        B: Body + Unpin + Send + 'static,
+        B::Data: Send,
+        B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+    {
+        let tcp = TcpStream::connect(uri.authority().unwrap().as_str())
+            .await
+            .unwrap();
+
+        if uri.scheme() == Some(&hyper::http::uri::Scheme::HTTPS) {
+            let tls = self
+                .tls_connector
+                .connect(uri.host().unwrap(), tcp)
+                .await
+                .unwrap();
+
+            if let Ok(Some(true)) = tls
+                .get_ref()
+                .negotiated_alpn()
+                .map(|a| a.map(|b| b == b"h2"))
+            {
+                let (sender, conn) = client::conn::http2::Builder::new(TokioExecutor::new())
+                    .handshake(TokioIo::new(tls))
+                    .await
+                    .unwrap();
+
+                tokio::spawn(conn);
+
+                SendRequest::Http2(sender)
+            } else {
+                let (sender, conn) = client::conn::http1::Builder::new()
+                    .preserve_header_case(true)
+                    .title_case_headers(true)
+                    .handshake(TokioIo::new(tls))
+                    .await
+                    .unwrap();
+
+                tokio::spawn(conn);
+
+                SendRequest::Http1(sender)
+            }
+        } else {
+            let (sender, conn) = client::conn::http1::Builder::new()
+                .preserve_header_case(true)
+                .title_case_headers(true)
+                .handshake(TokioIo::new(tcp))
+                .await
+                .unwrap();
+            tokio::spawn(conn);
+            SendRequest::Http1(sender)
         }
     }
 }
