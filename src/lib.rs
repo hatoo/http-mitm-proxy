@@ -231,7 +231,6 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
                             let (res_tx, res_rx) = futures::channel::oneshot::channel();
                             let (upgrade_tx, upgrade_rx) = futures::channel::oneshot::channel();
 
-                            dbg!(req.uri());
                             inject_authority(&mut req, connect_authority.clone());
                             let _ = tx.unbounded_send(Communication {
                                 client_addr,
@@ -393,15 +392,14 @@ where
                             authority.as_str().parse().expect("Invalid authority"),
                         );
                     }
-                    remove_authority(&mut req);
                 }
+                remove_authority(&mut req);
                 sender.send_request(req).await
             }
             SendRequest::Http2(sender) => {
                 if req.version() != hyper::Version::HTTP_2 {
                     req.headers_mut().remove(header::HOST);
                 }
-
                 sender.send_request(req).await
             }
         }
