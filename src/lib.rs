@@ -214,6 +214,8 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
                         return;
                     };
 
+                    dbg!(client.get_ref().1.alpn_protocol());
+
                     let _ = server::conn::http2::Builder::new(TokioExecutor::new())
                         // .preserve_header_case(true)
                         // .title_case_headers(true)
