@@ -423,6 +423,8 @@ impl<C> MitmProxyImpl<C> {
                 });
 
         let tcp = TcpStream::connect((host, port)).await.unwrap();
+        // This is actually needed to some servers
+        let _ = tcp.set_nodelay(true);
 
         if uri.scheme() == Some(&hyper::http::uri::Scheme::HTTPS) {
             let tls = self.tls_connector.connect(host, tcp).await.unwrap();
