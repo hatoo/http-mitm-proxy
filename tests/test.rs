@@ -94,7 +94,7 @@ struct Setup<B> {
 
 async fn setup<B>(app: Router, https_server: bool) -> Setup<B>
 where
-    B: Body<Data = Bytes> + Send + 'static,
+    B: Body<Data = Bytes> + Send + Unpin + 'static,
     B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
     let server_port = if https_server {
@@ -153,7 +153,7 @@ fn root_cert() -> rcgen::CertifiedKey {
 
 async fn setup_tls<B>(app: Router, without_cert: bool, http_server: bool) -> Setup<B>
 where
-    B: Body<Data = Bytes> + Send + 'static,
+    B: Body<Data = Bytes> + Send + Unpin + 'static,
     B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
     let server_port = if http_server {

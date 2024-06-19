@@ -96,7 +96,7 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
         std::io::Error,
     >
     where
-        B: Body<Data = Bytes> + Send + 'static,
+        B: Body<Data = Bytes> + Send + Unpin + 'static,
         B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
     {
         let listener = TcpListener::bind(addr).await?;
@@ -135,7 +135,7 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
         tx: UnboundedSender<Communication<B>>,
         client_addr: std::net::SocketAddr,
     ) where
-        B: Body<Data = Bytes> + Send + 'static,
+        B: Body<Data = Bytes> + Unpin + Send + 'static,
         B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
     {
         if let Err(err) = server::conn::http1::Builder::new()
@@ -159,7 +159,7 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
         client_addr: std::net::SocketAddr,
     ) -> Result<Response<BoxBody<Bytes, Arc<hyper::Error>>>, hyper::Error>
     where
-        B: Body<Data = Bytes> + Send + 'static,
+        B: Body<Data = Bytes> + Unpin + Send + 'static,
         B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
     {
         let original_uri = req.uri().clone();
@@ -214,9 +214,9 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
                         return;
                     };
 
-                    let _ = server::conn::http1::Builder::new()
-                        .preserve_header_case(true)
-                        .title_case_headers(true)
+                    let _ = server::conn::http2::Builder::new(TokioExecutor::new())
+                        // .preserve_header_case(true)
+                        // .title_case_headers(true)
                         .serve_connection(
                             TokioIo::new(client),
                             service_fn(move |mut req| {
@@ -247,6 +247,7 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
                                         ));
                                     };
 
+                                    /*
                                     let host = req.uri().host().map(str::to_string).unwrap_or(host);
                                     let authority =
                                         req.uri().authority().cloned().unwrap_or(authority);
@@ -292,18 +293,22 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
                                         tokio::spawn(conn.with_upgrades());
                                         sender
                                     };
+                                    */
+                                    let mut sender = proxy.connect(req.uri()).await;
 
-                                    remove_authority(&mut req);
+                                    // remove_authority(&mut req);
 
                                     let (req, req_parts) = dup_request(req);
                                     let (res, res_upgrade) = match sender.send_request(req).await {
                                         Ok(res) => {
+                                            tracing::info!("Response: {:?}", res.status());
                                             let (res, res_upgrade, res_middleman) =
                                                 dup_response(res);
                                             let _ = res_tx.send(Ok(res_middleman));
                                             (res, res_upgrade)
                                         }
                                         Err(err) => {
+                                            tracing::error!("Failed to send request: {}", err);
                                             let _ = res_tx.send(Err(err));
                                             return Ok::<_, hyper::Error>(no_body(
                                                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -343,7 +348,7 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
                                 }
                             }),
                         )
-                        .with_upgrades()
+                        // .with_upgrades()
                         .await;
                 } else {
                     let Ok(mut server) =
@@ -363,6 +368,7 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
                     .boxed(),
             ))
         } else {
+            /*
             let Some(host) = req.uri().host() else {
                 tracing::error!("Bad request: {}, Reason: Invalid Host", req.uri());
                 return Ok(no_body(StatusCode::BAD_REQUEST));
@@ -402,18 +408,22 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
                 tokio::spawn(conn.with_upgrades());
                 sender
             };
+            */
+            let mut sender = proxy.connect(req.uri()).await;
 
             remove_authority(&mut req);
 
             let (req, req_parts) = dup_request(req);
             let (status, res, res_upgrade) = match sender.send_request(req).await {
                 Ok(res) => {
+                    tracing::info!("Response: {:?}", res.status());
                     let status = res.status();
                     let (res, res_upgrade, res_middleman) = dup_response(res);
                     let _ = res_tx.send(Ok(res_middleman));
                     (status, res, res_upgrade)
                 }
                 Err(err) => {
+                    tracing::error!("Failed to send request: {}", err);
                     let _ = res_tx.send(Err(err));
                     return Ok(no_body(StatusCode::INTERNAL_SERVER_ERROR));
                 }
@@ -453,6 +463,7 @@ where
     B: Body + 'static,
 {
     async fn send_request(&mut self, req: Request<B>) -> Result<Response<Incoming>, hyper::Error> {
+        dbg!(req.method());
         match self {
             SendRequest::Http1(sender) => sender.send_request(req).await,
             SendRequest::Http2(sender) => sender.send_request(req).await,
@@ -461,22 +472,28 @@ where
 }
 
 impl<C> MitmProxyImpl<C> {
-    async fn connect<B>(&self, uri: Uri) -> SendRequest<B>
+    async fn connect<B>(&self, uri: &Uri) -> SendRequest<B>
     where
         B: Body + Unpin + Send + 'static,
         B::Data: Send,
         B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
     {
-        let tcp = TcpStream::connect(uri.authority().unwrap().as_str())
-            .await
-            .unwrap();
+        let Some(host) = uri.host() else {
+            tracing::error!("Bad request: {}, Reason: Invalid Host", uri);
+            panic!();
+        };
+        let port =
+            uri.port_u16()
+                .unwrap_or(if uri.scheme() == Some(&hyper::http::uri::Scheme::HTTPS) {
+                    443
+                } else {
+                    80
+                });
+
+        let tcp = TcpStream::connect((host, port)).await.unwrap();
 
         if uri.scheme() == Some(&hyper::http::uri::Scheme::HTTPS) {
-            let tls = self
-                .tls_connector
-                .connect(uri.host().unwrap(), tcp)
-                .await
-                .unwrap();
+            let tls = self.tls_connector.connect(host, tcp).await.unwrap();
 
             if let Ok(Some(true)) = tls
                 .get_ref()
@@ -499,7 +516,7 @@ impl<C> MitmProxyImpl<C> {
                     .await
                     .unwrap();
 
-                tokio::spawn(conn);
+                tokio::spawn(conn.with_upgrades());
 
                 SendRequest::Http1(sender)
             }
@@ -510,7 +527,7 @@ impl<C> MitmProxyImpl<C> {
                 .handshake(TokioIo::new(tcp))
                 .await
                 .unwrap();
-            tokio::spawn(conn);
+            tokio::spawn(conn.with_upgrades());
             SendRequest::Http1(sender)
         }
     }
