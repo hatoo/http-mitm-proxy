@@ -221,7 +221,7 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
                         return;
                     };
 
-                    let f = move |mut req| {
+                    let f = move |mut req: Request<_>| {
                         let tx = tx.clone();
                         let connect_authority = connect_authority.clone();
                         let proxy = proxy.clone();
@@ -231,6 +231,7 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
                             let (res_tx, res_rx) = futures::channel::oneshot::channel();
                             let (upgrade_tx, upgrade_rx) = futures::channel::oneshot::channel();
 
+                            dbg!(req.uri());
                             inject_authority(&mut req, connect_authority.clone());
                             let _ = tx.unbounded_send(Communication {
                                 client_addr,
@@ -248,6 +249,8 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
 
                             let mut sender = proxy.connect(req.uri()).await;
 
+                            let uri = req.uri().clone();
+
                             let (req, req_parts) = dup_request(req);
                             let (res, res_upgrade) = match sender.send_request(req).await {
                                 Ok(res) => {
@@ -257,7 +260,7 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
                                     (res, res_upgrade)
                                 }
                                 Err(err) => {
-                                    tracing::error!("Failed to send request: {}", err);
+                                    tracing::error!("Failed to send request to {}: {}", uri, err);
                                     let _ = res_tx.send(Err(err));
                                     return Ok::<_, hyper::Error>(no_body(
                                         StatusCode::INTERNAL_SERVER_ERROR,
@@ -325,50 +328,8 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
                     .boxed(),
             ))
         } else {
-            /*
-            let Some(host) = req.uri().host() else {
-                tracing::error!("Bad request: {}, Reason: Invalid Host", req.uri());
-                return Ok(no_body(StatusCode::BAD_REQUEST));
-            };
-            let port = req.uri().port_u16().unwrap_or(
-                if req.uri().scheme() == Some(&hyper::http::uri::Scheme::HTTPS) {
-                    443
-                } else {
-                    80
-                },
-            );
-
-            let Ok(stream) = TcpStream::connect((host, port)).await else {
-                tracing::error!("Failed to connect to {}", req.uri());
-                return Ok(no_body(StatusCode::BAD_GATEWAY));
-            };
-
-            let mut sender = if req.uri().scheme() == Some(&hyper::http::uri::Scheme::HTTPS) {
-                let Ok(stream) = proxy.tls_connector.connect(host, stream).await else {
-                    return Ok(no_body(StatusCode::INTERNAL_SERVER_ERROR));
-                };
-                let (sender, conn) = client::conn::http1::Builder::new()
-                    .preserve_header_case(true)
-                    .title_case_headers(true)
-                    .handshake(TokioIo::new(stream))
-                    .await?;
-
-                tokio::spawn(conn.with_upgrades());
-                sender
-            } else {
-                let (sender, conn) = client::conn::http1::Builder::new()
-                    .preserve_header_case(true)
-                    .title_case_headers(true)
-                    .handshake(TokioIo::new(stream))
-                    .await?;
-
-                tokio::spawn(conn.with_upgrades());
-                sender
-            };
-            */
+            let uri = req.uri().clone();
             let mut sender = proxy.connect(req.uri()).await;
-
-            // remove_authority(&mut req);
 
             let (req, req_parts) = dup_request(req);
             let (status, res, res_upgrade) = match sender.send_request(req).await {
@@ -380,7 +341,7 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
                     (status, res, res_upgrade)
                 }
                 Err(err) => {
-                    tracing::error!("Failed to send request: {}", err);
+                    tracing::error!("Failed to send request to {}: {}", uri, err);
                     let _ = res_tx.send(Err(err));
                     return Ok(no_body(StatusCode::INTERNAL_SERVER_ERROR));
                 }
@@ -423,7 +384,6 @@ where
         &mut self,
         mut req: Request<B>,
     ) -> Result<Response<Incoming>, hyper::Error> {
-        dbg!(req.method());
         match self {
             SendRequest::Http1(sender) => {
                 if req.version() == hyper::Version::HTTP_2 {
@@ -441,6 +401,7 @@ where
                 if req.version() != hyper::Version::HTTP_2 {
                     req.headers_mut().remove(header::HOST);
                 }
+
                 sender.send_request(req).await
             }
         }
@@ -518,7 +479,9 @@ fn no_body(status: StatusCode) -> Response<BoxBody<Bytes, Arc<hyper::Error>>> {
 fn inject_authority<B>(request_middleman: &mut Request<B>, authority: hyper::http::uri::Authority) {
     let mut parts = request_middleman.uri().clone().into_parts();
     parts.scheme = Some(hyper::http::uri::Scheme::HTTPS);
-    parts.authority = Some(authority);
+    if parts.authority.is_none() {
+        parts.authority = Some(authority);
+    }
     *request_middleman.uri_mut() = hyper::http::uri::Uri::from_parts(parts).unwrap();
 }
 
