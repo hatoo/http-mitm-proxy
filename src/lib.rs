@@ -381,7 +381,7 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
             };
 
             let mut sender = if req.uri().scheme() == Some(&hyper::http::uri::Scheme::HTTPS) {
-                let Ok(stream) = proxy.tls_connector.connect(&host, stream).await else {
+                let Ok(stream) = proxy.tls_connector.connect(host, stream).await else {
                     return Ok(no_body(StatusCode::INTERNAL_SERVER_ERROR));
                 };
                 let (sender, conn) = client::conn::http1::Builder::new()
