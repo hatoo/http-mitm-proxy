@@ -27,4 +27,8 @@ pub fn server_config(
                 private_key.serialize_der(),
             )),
         )
+        .map(|mut server_config| {
+            server_config.alpn_protocols = vec!["h2".into(), "http/1.1".into()];
+            server_config
+        })
 }

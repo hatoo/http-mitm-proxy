@@ -42,6 +42,8 @@ fn make_root_cert() -> rcgen::CertifiedKey {
 async fn main() {
     let opt = Opt::parse();
 
+    tracing_subscriber::fmt().init();
+
     let root_cert = if let Some(external_cert) = opt.external_cert {
         // Use existing key
         let param = rcgen::CertificateParams::from_ca_cert_pem(
@@ -66,7 +68,10 @@ async fn main() {
         // This is the root cert that will be used to sign the fake certificates
         Some(root_cert),
         // This is the connector that will be used to connect to the upstream server from proxy
-        tokio_native_tls::native_tls::TlsConnector::new().unwrap(),
+        tokio_native_tls::native_tls::TlsConnector::builder()
+            .request_alpns(&["h2", "http/1.1"])
+            .build()
+            .unwrap(),
     );
 
     let (mut communications, server) = proxy.bind(("127.0.0.1", 3003)).await.unwrap();
@@ -92,23 +97,26 @@ async fn main() {
         let uri = comm.request.uri().clone();
         // modify the request here if you want
         let _ = comm.request_back.send(comm.request);
-        if let Ok(Ok(mut response)) = comm.response.await {
-            let mut len = 0;
-            let body = response.body_mut();
-            while let Some(frame) = body.next().await {
-                if let Ok(frame) = frame {
-                    if let Some(data) = frame.data_ref() {
-                        len += data.len();
+
+        tokio::spawn(async move {
+            if let Ok(Ok(mut response)) = comm.response.await {
+                let mut len = 0;
+                let body = response.body_mut();
+                while let Some(frame) = body.next().await {
+                    if let Ok(frame) = frame {
+                        if let Some(data) = frame.data_ref() {
+                            len += data.len();
+                        }
                     }
                 }
+                println!(
+                    "{}\t{}\t{}\t{}",
+                    comm.client_addr,
+                    uri,
+                    response.status(),
+                    len
+                );
             }
-            println!(
-                "{}\t{}\t{}\t{}",
-                comm.client_addr,
-                uri,
-                response.status(),
-                len
-            );
-        }
+        });
     }
 }
