@@ -297,10 +297,7 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
 
                     if client.get_ref().1.alpn_protocol() == Some(b"h2") {
                         let _ = server::conn::http2::Builder::new(TokioExecutor::new())
-                            // .preserve_header_case(true)
-                            // .title_case_headers(true)
                             .serve_connection(TokioIo::new(client), service_fn(f))
-                            // .with_upgrades()
                             .await;
                     } else {
                         let _ = server::conn::http1::Builder::new()
