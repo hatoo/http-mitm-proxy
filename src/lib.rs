@@ -213,8 +213,6 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
                         return;
                     };
 
-                    dbg!(client.get_ref().1.alpn_protocol());
-
                     let f = move |mut req| {
                         let tx = tx.clone();
                         let authority = authority.clone();
@@ -471,11 +469,21 @@ where
         dbg!(req.method());
         match self {
             SendRequest::Http1(sender) => {
-                remove_authority(&mut req);
+                if req.version() == hyper::Version::HTTP_2 {
+                    if let Some(authority) = req.uri().authority().cloned() {
+                        req.headers_mut().insert(
+                            header::HOST,
+                            authority.as_str().parse().expect("Invalid authority"),
+                        );
+                    }
+                    remove_authority(&mut req);
+                }
                 sender.send_request(req).await
             }
             SendRequest::Http2(sender) => {
-                req.headers_mut().remove(header::HOST);
+                if req.version() != hyper::Version::HTTP_2 {
+                    req.headers_mut().remove(header::HOST);
+                }
                 sender.send_request(req).await
             }
         }
