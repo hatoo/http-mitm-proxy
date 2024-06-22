@@ -163,25 +163,13 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
         B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
     {
         let original_uri = req.uri().clone();
-        let (req_back_tx, req_back_rx) = futures::channel::oneshot::channel();
-        let (res_tx, res_rx) = futures::channel::oneshot::channel();
-        let (upgrade_tx, upgrade_rx) = futures::channel::oneshot::channel();
-        // Used tokio::spawn above to middle_man can consume rx in request()
-        let _ = tx.unbounded_send(Communication {
-            client_addr,
-            request: req,
-            request_back: req_back_tx,
-            response: res_rx,
-            upgrade: upgrade_rx,
-        });
 
-        let Ok(req) = req_back_rx.await else {
-            tracing::info!("Request canceled");
+        let (Some(req), res_tx, upgrade_tx) = send_and_receive_request(&tx, client_addr, req).await
+        else {
             return Ok(no_body(StatusCode::INTERNAL_SERVER_ERROR));
         };
 
         if req.method() == Method::CONNECT {
-            // Modified CONNECT request is ignored
             // HTTPS connection
             let Some(connect_authority) = req.uri().authority().cloned() else {
                 tracing::error!(
@@ -217,9 +205,16 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
                     // TODO: Cache server_config
                     let server_config = Arc::new(server_config);
                     let tls_acceptor = tokio_rustls::TlsAcceptor::from(server_config);
-                    let Ok(client) = tls_acceptor.accept(TokioIo::new(client)).await else {
-                        tracing::error!("Failed to accept TLS connection for {}", original_host);
-                        return;
+                    let client = match tls_acceptor.accept(TokioIo::new(client)).await {
+                        Ok(client) => client,
+                        Err(err) => {
+                            tracing::error!(
+                                "Failed to accept TLS connection for {}, {}",
+                                original_host,
+                                err
+                            );
+                            return;
+                        }
                     };
 
                     let f = move |mut req: Request<_>| {
@@ -228,20 +223,11 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
                         let proxy = proxy.clone();
 
                         async move {
-                            let (req_back_tx, req_back_rx) = futures::channel::oneshot::channel();
-                            let (res_tx, res_rx) = futures::channel::oneshot::channel();
-                            let (upgrade_tx, upgrade_rx) = futures::channel::oneshot::channel();
-
                             inject_authority(&mut req, connect_authority.clone());
-                            let _ = tx.unbounded_send(Communication {
-                                client_addr,
-                                request: req,
-                                request_back: req_back_tx,
-                                response: res_rx,
-                                upgrade: upgrade_rx,
-                            });
-                            let Ok(req) = req_back_rx.await else {
-                                tracing::info!("Request canceled");
+
+                            let (Some(req), res_tx, upgrade_tx) =
+                                send_and_receive_request(&tx, client_addr, req).await
+                            else {
                                 return Ok::<_, hyper::Error>(no_body(
                                     StatusCode::INTERNAL_SERVER_ERROR,
                                 ));
@@ -423,7 +409,13 @@ impl<C> MitmProxyImpl<C> {
                     80
                 });
 
-        let tcp = TcpStream::connect((host, port)).await.unwrap();
+        let tcp = match TcpStream::connect((host, port)).await {
+            Ok(tcp) => tcp,
+            Err(err) => {
+                tracing::error!("Failed to connect to {}:{} {}", host, port, err);
+                panic!();
+            }
+        };
         // This is actually needed to some servers
         let _ = tcp.set_nodelay(true);
 
@@ -594,4 +586,35 @@ where
     });
 
     (StreamBody::new(body), rx)
+}
+
+async fn send_and_receive_request<B>(
+    tx: &UnboundedSender<Communication<B>>,
+    client_addr: std::net::SocketAddr,
+    req: Request<Incoming>,
+) -> (
+    Option<Request<B>>,
+    futures::channel::oneshot::Sender<
+        Result<Response<UnboundedReceiver<Result<Frame<Bytes>, Arc<hyper::Error>>>>, hyper::Error>,
+    >,
+    futures::channel::oneshot::Sender<Upgrade>,
+) {
+    let (req_back_tx, req_back_rx) = futures::channel::oneshot::channel();
+    let (res_tx, res_rx) = futures::channel::oneshot::channel();
+    let (upgrade_tx, upgrade_rx) = futures::channel::oneshot::channel();
+    // Used tokio::spawn above to middle_man can consume rx in request()
+    let _ = tx.unbounded_send(Communication {
+        client_addr,
+        request: req,
+        request_back: req_back_tx,
+        response: res_rx,
+        upgrade: upgrade_rx,
+    });
+
+    if let Ok(req) = req_back_rx.await {
+        tracing::info!("Request canceled");
+        (Some(req), res_tx, upgrade_tx)
+    } else {
+        (None, res_tx, upgrade_tx)
+    }
 }
