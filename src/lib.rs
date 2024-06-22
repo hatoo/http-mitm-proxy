@@ -67,7 +67,8 @@ pub struct Upgrade {
 pub struct Communication<B> {
     /// Client address
     pub client_addr: std::net::SocketAddr,
-    /// Request from client. request.uri() is an absolute URI.
+    /// Request from client. request.uri() is an absolute URI except for `CONNECT` method.
+    /// If you modify uri of `CONNECT` method, subsequent request will be sent to the modified uri (off course you can modify it). But `HOST` header remains the original value.
     pub request: Request<Incoming>,
     /// Send request back to server. You can modify request before sending it back.
     /// NOTE: If you drop this without send(), communication will be canceled and server will not receive request and client will get 500 Internal Server Error.
