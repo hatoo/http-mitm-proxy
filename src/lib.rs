@@ -206,9 +206,16 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
                     // TODO: Cache server_config
                     let server_config = Arc::new(server_config);
                     let tls_acceptor = tokio_rustls::TlsAcceptor::from(server_config);
-                    let Ok(client) = tls_acceptor.accept(TokioIo::new(client)).await else {
-                        tracing::error!("Failed to accept TLS connection for {}", original_host);
-                        return;
+                    let client = match tls_acceptor.accept(TokioIo::new(client)).await {
+                        Ok(client) => client,
+                        Err(err) => {
+                            tracing::error!(
+                                "Failed to accept TLS connection for {}, {}",
+                                original_host,
+                                err
+                            );
+                            return;
+                        }
                     };
 
                     let f = move |mut req: Request<_>| {
@@ -403,7 +410,13 @@ impl<C> MitmProxyImpl<C> {
                     80
                 });
 
-        let tcp = TcpStream::connect((host, port)).await.unwrap();
+        let tcp = match TcpStream::connect((host, port)).await {
+            Ok(tcp) => tcp,
+            Err(err) => {
+                tracing::error!("Failed to connect to {}:{} {}", host, port, err);
+                panic!();
+            }
+        };
         // This is actually needed to some servers
         let _ = tcp.set_nodelay(true);
 
