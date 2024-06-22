@@ -313,7 +313,7 @@ async fn test_modify_header() {
     assert_eq!(String::from_utf8(body).unwrap(), "MODIFIED");
 }
 #[tokio::test]
-async fn test_modify_url() {
+async fn test_modify_url_http_to_http() {
     let app = Router::new().route("/", get(|| async { "Hello, World!" }));
 
     let mut setup = setup(app, false).await;
@@ -340,7 +340,7 @@ async fn test_modify_url() {
 }
 
 #[tokio::test]
-async fn test_modify_url_https() {
+async fn test_modify_url_http_to_https() {
     let app = Router::new().route("/", get(|| async { "Hello, World!" }));
 
     let mut setup = setup(app, true).await;
@@ -529,7 +529,7 @@ async fn test_tls_simple() {
 }
 
 #[tokio::test]
-async fn test_tls_modify_url() {
+async fn test_tls_modify_url_https_to_https() {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
@@ -566,7 +566,7 @@ async fn test_tls_modify_url() {
 }
 
 #[tokio::test]
-async fn test_tls_modify_url_http() {
+async fn test_tls_modify_url_https_to_http() {
     let app = Router::new().route("/", get(|| async { "Hello, World!" }));
 
     let mut setup = setup_tls(app, false, true).await;
