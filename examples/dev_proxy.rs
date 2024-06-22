@@ -103,7 +103,7 @@ async fn main() {
         let original_url = req.uri().clone();
 
         // Forward connection from http/https dev.example to http://127.0.0.1:3333
-        if req.uri().host() == Some("dev.example") {
+        if req.uri().host() == Some("dev.example") && req.method() != hyper::http::Method::CONNECT {
             req.headers_mut().insert(
                 hyper::header::HOST,
                 hyper::header::HeaderValue::from_maybe_shared(format!("127.0.0.1:{}", port))
