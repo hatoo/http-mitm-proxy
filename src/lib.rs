@@ -170,7 +170,6 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
         };
 
         if req.method() == Method::CONNECT {
-            // Modified CONNECT request is ignored
             // HTTPS connection
             let Some(connect_authority) = req.uri().authority().cloned() else {
                 tracing::error!(
