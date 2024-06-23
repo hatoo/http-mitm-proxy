@@ -172,6 +172,7 @@ where
     let proxy = http_mitm_proxy::MitmProxy::new(
         if without_cert { None } else { Some(root_cert) },
         tokio_native_tls::native_tls::TlsConnector::builder()
+            .request_alpns(&["h2", "http/1.1"])
             .danger_accept_invalid_certs(true)
             .danger_accept_invalid_hostnames(true)
             .build()
@@ -244,6 +245,7 @@ async fn test_simple() {
 
     let response = response.await.unwrap().unwrap();
 
+    assert_eq!(response.version(), hyper::http::Version::HTTP_11);
     assert_eq!(response.status(), 200);
     assert_eq!(response.bytes().await.unwrap().as_ref(), b"Hello, World!");
 
