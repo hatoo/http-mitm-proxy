@@ -34,6 +34,7 @@ tokio-native-tls = "0.3.1"
 tracing = "0.1.40"
 hyper-util = { version = "0.1.1", features = ["tokio"] }
 native-tls = { version = "0.2.12", features = ["alpn"] }
+anyhow = "1.0.86"
 
 [dev-dependencies]
 axum = "0.7.2"

@@ -234,7 +234,7 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
                                 ));
                             };
 
-                            let mut sender = proxy.connect(req.uri()).await;
+                            let mut sender = proxy.connect(req.uri()).await.unwrap();
 
                             let uri = req.uri().clone();
 
@@ -313,7 +313,7 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
             ))
         } else {
             let uri = req.uri().clone();
-            let mut sender = proxy.connect(req.uri()).await;
+            let mut sender = proxy.connect(req.uri()).await.unwrap();
 
             let (req, req_parts) = dup_request(req);
             let (status, res, res_upgrade) = match sender.send_request(req).await {
@@ -392,16 +392,13 @@ where
 }
 
 impl<C> MitmProxyImpl<C> {
-    async fn connect<B>(&self, uri: &Uri) -> SendRequest<B>
+    async fn connect<B>(&self, uri: &Uri) -> anyhow::Result<SendRequest<B>>
     where
         B: Body + Unpin + Send + 'static,
         B::Data: Send,
         B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
     {
-        let Some(host) = uri.host() else {
-            tracing::error!("Bad request: {}, Reason: Invalid Host", uri);
-            panic!();
-        };
+        let host = uri.host().ok_or_else(|| anyhow::anyhow!("Invalid host"))?;
         let port =
             uri.port_u16()
                 .unwrap_or(if uri.scheme() == Some(&hyper::http::uri::Scheme::HTTPS) {
@@ -410,18 +407,12 @@ impl<C> MitmProxyImpl<C> {
                     80
                 });
 
-        let tcp = match TcpStream::connect((host, port)).await {
-            Ok(tcp) => tcp,
-            Err(err) => {
-                tracing::error!("Failed to connect to {}:{} {}", host, port, err);
-                panic!();
-            }
-        };
+        let tcp = TcpStream::connect((host, port)).await?;
         // This is actually needed to some servers
         let _ = tcp.set_nodelay(true);
 
         if uri.scheme() == Some(&hyper::http::uri::Scheme::HTTPS) {
-            let tls = self.tls_connector.connect(host, tcp).await.unwrap();
+            let tls = self.tls_connector.connect(host, tcp).await?;
 
             if let Ok(Some(true)) = tls
                 .get_ref()
@@ -430,33 +421,30 @@ impl<C> MitmProxyImpl<C> {
             {
                 let (sender, conn) = client::conn::http2::Builder::new(TokioExecutor::new())
                     .handshake(TokioIo::new(tls))
-                    .await
-                    .unwrap();
+                    .await?;
 
                 tokio::spawn(conn);
 
-                SendRequest::Http2(sender)
+                Ok(SendRequest::Http2(sender))
             } else {
                 let (sender, conn) = client::conn::http1::Builder::new()
                     .preserve_header_case(true)
                     .title_case_headers(true)
                     .handshake(TokioIo::new(tls))
-                    .await
-                    .unwrap();
+                    .await?;
 
                 tokio::spawn(conn.with_upgrades());
 
-                SendRequest::Http1(sender)
+                Ok(SendRequest::Http1(sender))
             }
         } else {
             let (sender, conn) = client::conn::http1::Builder::new()
                 .preserve_header_case(true)
                 .title_case_headers(true)
                 .handshake(TokioIo::new(tcp))
-                .await
-                .unwrap();
+                .await?;
             tokio::spawn(conn.with_upgrades());
-            SendRequest::Http1(sender)
+            Ok(SendRequest::Http1(sender))
         }
     }
 }
