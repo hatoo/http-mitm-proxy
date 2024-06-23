@@ -75,7 +75,10 @@ async fn main() {
         // This is the root cert that will be used to sign the fake certificates
         Some(root_cert),
         // This is the connector that will be used to connect to the upstream server from proxy
-        tokio_native_tls::native_tls::TlsConnector::new().unwrap(),
+        tokio_native_tls::native_tls::TlsConnector::builder()
+            .request_alpns(&["h2", "http/1.1"])
+            .build()
+            .unwrap(),
     );
 
     let (mut communications, server) = proxy.bind(("127.0.0.1", 3003)).await.unwrap();
