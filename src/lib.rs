@@ -3,6 +3,7 @@
 use bytes::Bytes;
 use futures::{
     channel::mpsc::{UnboundedReceiver, UnboundedSender},
+    lock::Mutex,
     Stream,
 };
 use http_body_util::{combinators::BoxBody, BodyExt, Empty, StreamBody};
@@ -172,6 +173,13 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
 
         if req.method() == Method::CONNECT {
             // HTTPS connection
+            let connect_url = {
+                let mut parts = req.uri().clone().into_parts();
+                parts.scheme = Some(hyper::http::uri::Scheme::HTTPS);
+                parts.path_and_query = Some(hyper::http::uri::PathAndQuery::from_static("/"));
+
+                Uri::from_parts(parts).unwrap()
+            };
             let Some(connect_authority) = req.uri().authority().cloned() else {
                 tracing::error!(
                     "Bad CONNECT request: {}, Reason: Invalid Authority",
@@ -196,9 +204,14 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
                 };
 
                 if let Some(root_cert) = proxy.root_cert.as_ref() {
+                    let send_request_connect = proxy.connect(&connect_url).await;
+
+                    let connect_server_h2 =
+                        matches!(send_request_connect, Ok(SendRequest::Http2(_)));
+
                     let Ok(server_config) =
                         // Even if URL is modified by middleman, we should sign with original host name to communicate client.
-                        server_config(original_host.to_string(), root_cert.borrow())
+                        server_config(original_host.to_string(), root_cert.borrow(), connect_server_h2)
                     else {
                         tracing::error!("Failed to create server config for {}", original_host);
                         return;
@@ -218,10 +231,13 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
                         }
                     };
 
+                    let send_request_connect = Arc::new(Mutex::new(send_request_connect));
+
                     let f = move |mut req: Request<_>| {
                         let tx = tx.clone();
                         let connect_authority = connect_authority.clone();
                         let proxy = proxy.clone();
+                        let send_request_connect = send_request_connect.clone();
 
                         async move {
                             inject_authority(&mut req, connect_authority.clone());
@@ -234,12 +250,25 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
                                 ));
                             };
 
-                            let mut sender = proxy.connect(req.uri()).await.unwrap();
-
                             let uri = req.uri().clone();
 
                             let (req, req_parts) = dup_request(req);
-                            let (res, res_upgrade) = match sender.send_request(req).await {
+
+                            let response = if let Ok(send_request_connect) =
+                                send_request_connect.lock().await.as_mut()
+                            {
+                                if uri.authority() == Some(&connect_authority) {
+                                    send_request_connect.send_request(req).await
+                                } else {
+                                    let mut sender = proxy.connect(req.uri()).await.unwrap();
+                                    sender.send_request(req).await
+                                }
+                            } else {
+                                let mut sender = proxy.connect(req.uri()).await.unwrap();
+                                sender.send_request(req).await
+                            };
+
+                            let (res, res_upgrade) = match response {
                                 Ok(res) => {
                                     tracing::info!("Response: {:?}", res.status());
                                     let (res, res_upgrade, res_middleman) = dup_response(res);
@@ -247,7 +276,7 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
                                     (res, res_upgrade)
                                 }
                                 Err(err) => {
-                                    tracing::error!("Failed to send request to {}: {}", uri, err);
+                                    tracing::error!("Failed to send request to {} {}", uri, err);
                                     let _ = res_tx.send(Err(err));
                                     return Ok::<_, hyper::Error>(no_body(
                                         StatusCode::INTERNAL_SERVER_ERROR,
