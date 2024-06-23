@@ -85,6 +85,7 @@ async fn main() {
         Some(root_cert),
         // This is the connector that will be used to connect to the upstream server from proxy
         tokio_native_tls::native_tls::TlsConnector::builder()
+            // You must set ALPN if you want to support HTTP/2
             .request_alpns(&["h2", "http/1.1"])
             .build()
             .unwrap(),
