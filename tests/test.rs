@@ -552,6 +552,59 @@ async fn test_tls_simple() {
 
 #[tokio::test]
 #[traced_test]
+async fn test_tls_match_http_version() {
+    let app = Router::new().route(
+        "/",
+        get(|req: Request| async move {
+            assert_eq!(req.version(), hyper::http::Version::HTTP_11);
+            "Hello, World!"
+        }),
+    );
+
+    let mut setup = setup_tls(app, false, false, false).await;
+
+    let response = tokio::spawn(
+        setup
+            .client
+            .get(format!("https://127.0.0.1:{}/", setup.server_port))
+            .send(),
+    );
+
+    let communication = setup.proxy.next().await.unwrap();
+    assert_eq!(communication.request.method(), hyper::Method::CONNECT);
+    communication
+        .request_back
+        .send(communication.request)
+        .unwrap();
+
+    let communication = setup.proxy.next().await.unwrap();
+    let uri = communication.request.uri().clone();
+    let headers = communication.request.headers().clone();
+    communication
+        .request_back
+        .send(communication.request)
+        .unwrap();
+
+    let response = response.await.unwrap().unwrap();
+
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.bytes().await.unwrap().as_ref(), b"Hello, World!");
+
+    assert_eq!(
+        uri.to_string(),
+        format!("https://127.0.0.1:{}/", setup.server_port)
+    );
+    assert_eq!(
+        headers.get(header::HOST).unwrap(),
+        format!("127.0.0.1:{}", setup.server_port).as_bytes()
+    );
+
+    let body = read_body(communication.response.await.unwrap().unwrap().body_mut()).await;
+    assert_eq!(String::from_utf8(body).unwrap(), "Hello, World!");
+}
+
+#[tokio::test]
+#[traced_test]
 async fn test_tls_modify_url_https_to_https() {
     let app = Router::new().route("/", get(|| async { "Hello, World!" }));
 
