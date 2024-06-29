@@ -42,6 +42,6 @@ axum = { version = "0.7.2", features = ["http2"] }
 axum-server = { version = "0.6.0", features = ["tls-rustls"] }
 clap = { version = "4.4.16", features = ["derive"] }
 rcgen = { version = "0.13.1", features = ["x509-parser"] }
-reqwest = "0.12.3"
+reqwest = { version = "0.12.3", features = ["native-tls-alpn"] }
 rustls21 = { package = "rustls", version = "0.21" }
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }

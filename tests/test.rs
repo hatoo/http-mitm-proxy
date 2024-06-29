@@ -526,7 +526,6 @@ async fn test_tls_simple() {
 
     let communication = setup.proxy.next().await.unwrap();
     let uri = communication.request.uri().clone();
-    let headers = communication.request.headers().clone();
     communication
         .request_back
         .send(communication.request)
@@ -534,16 +533,13 @@ async fn test_tls_simple() {
 
     let response = response.await.unwrap().unwrap();
 
+    assert_eq!(response.version(), hyper::http::Version::HTTP_2);
     assert_eq!(response.status(), 200);
     assert_eq!(response.bytes().await.unwrap().as_ref(), b"Hello, World!");
 
     assert_eq!(
         uri.to_string(),
         format!("https://127.0.0.1:{}/", setup.server_port)
-    );
-    assert_eq!(
-        headers.get(header::HOST).unwrap(),
-        format!("127.0.0.1:{}", setup.server_port).as_bytes()
     );
 
     let body = read_body(communication.response.await.unwrap().unwrap().body_mut()).await;
@@ -587,6 +583,7 @@ async fn test_tls_match_http_version() {
 
     let response = response.await.unwrap().unwrap();
 
+    assert_eq!(response.version(), hyper::http::Version::HTTP_11);
     assert_eq!(response.status(), 200);
     assert_eq!(response.bytes().await.unwrap().as_ref(), b"Hello, World!");
 
@@ -618,7 +615,7 @@ async fn test_tls_modify_url_https_to_https() {
     comm.request_back.send(comm.request).unwrap();
 
     let mut comm = setup.proxy.next().await.unwrap();
-    assert_eq!(comm.request.uri().to_string(), "https://example.com:443/");
+    assert_eq!(comm.request.uri().to_string(), "https://example.com/");
     *comm.request.uri_mut() = format!("https://127.0.0.1:{}/", setup.server_port)
         .parse()
         .unwrap();
@@ -652,7 +649,7 @@ async fn test_tls_modify_url_https_to_http() {
     comm.request_back.send(comm.request).unwrap();
 
     let mut comm = setup.proxy.next().await.unwrap();
-    assert_eq!(comm.request.uri().to_string(), "https://example.com:443/");
+    assert_eq!(comm.request.uri().to_string(), "https://example.com/");
     *comm.request.uri_mut() = format!("http://127.0.0.1:{}/", setup.server_port)
         .parse()
         .unwrap();
@@ -698,7 +695,7 @@ async fn test_tls_simple_tunnel() {
 async fn test_tls_keep_alive() {
     let app = Router::new().route("/", get(|| async { "Hello, World!" }));
 
-    let mut setup = setup_tls(app, false, false, true).await;
+    let mut setup = setup_tls(app, false, false, false).await;
 
     let client = setup.client.clone();
 
