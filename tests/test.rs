@@ -4,6 +4,7 @@ use std::{
 };
 
 use axum::{
+    extract::Request,
     http::HeaderValue,
     response::{sse::Event, IntoResponse, Sse},
     routing::get,
@@ -224,7 +225,13 @@ async fn read_body(
 
 #[tokio::test]
 async fn test_simple() {
-    let app = Router::new().route("/", get(|| async { "Hello, World!" }));
+    let app = Router::new().route(
+        "/",
+        get(|req: Request| async move {
+            assert_eq!(req.version(), hyper::http::Version::HTTP_11);
+            "Hello, World!"
+        }),
+    );
 
     let mut setup = setup(app, false).await;
 
