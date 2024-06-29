@@ -35,9 +35,10 @@ tracing = "0.1.40"
 hyper-util = { version = "0.1.1", features = ["tokio"] }
 native-tls = { version = "0.2.12", features = ["alpn"] }
 anyhow = "1.0.86"
+tracing-test = "0.2.5"
 
 [dev-dependencies]
-axum = "0.7.2"
+axum = { version = "0.7.2", features = ["http2"] }
 axum-server = { version = "0.6.0", features = ["tls-rustls"] }
 clap = { version = "4.4.16", features = ["derive"] }
 rcgen = { version = "0.13.1", features = ["x509-parser"] }
