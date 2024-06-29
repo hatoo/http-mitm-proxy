@@ -4,6 +4,7 @@ use std::{
 };
 
 use axum::{
+    extract::Request,
     http::HeaderValue,
     response::{sse::Event, IntoResponse, Sse},
     routing::get,
@@ -26,6 +27,7 @@ use rcgen::generate_simple_self_signed;
 use reqwest::Client;
 use rustls21::ServerConfig;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tracing_test::traced_test;
 
 static PORT: AtomicU16 = AtomicU16::new(3666);
 
@@ -43,7 +45,7 @@ async fn bind_app(app: Router) -> (u16, impl std::future::Future<Output = ()>) {
     })
 }
 
-async fn bind_app_tls(app: Router) -> (u16, impl std::future::Future<Output = ()>) {
+async fn bind_app_tls(app: Router, h2: bool) -> (u16, impl std::future::Future<Output = ()>) {
     let port = get_port();
 
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
@@ -53,7 +55,7 @@ async fn bind_app_tls(app: Router) -> (u16, impl std::future::Future<Output = ()
     (port, async move {
         axum_server::from_tcp_rustls(
             listener.into_std().unwrap(),
-            RustlsConfig::from_config(tls_server_config(format!("127.0.0.1:{}", port))),
+            RustlsConfig::from_config(tls_server_config(format!("127.0.0.1:{}", port), h2)),
         )
         .serve(app.into_make_service())
         .await
@@ -61,10 +63,10 @@ async fn bind_app_tls(app: Router) -> (u16, impl std::future::Future<Output = ()
     })
 }
 
-fn tls_server_config(host: String) -> Arc<ServerConfig> {
+fn tls_server_config(host: String, h2: bool) -> Arc<ServerConfig> {
     let cert = generate_simple_self_signed(vec![host]).unwrap();
 
-    let server_config = ServerConfig::builder()
+    let mut server_config = ServerConfig::builder()
         .with_safe_defaults()
         .with_no_client_auth()
         .with_single_cert(
@@ -72,6 +74,10 @@ fn tls_server_config(host: String) -> Arc<ServerConfig> {
             rustls21::PrivateKey(cert.key_pair.serialize_der()),
         )
         .unwrap();
+
+    if h2 {
+        server_config.alpn_protocols = vec!["h2".into(), "http/1.1".into()];
+    }
 
     Arc::new(server_config)
 }
@@ -98,7 +104,7 @@ where
     B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
     let server_port = if https_server {
-        let (p, s) = bind_app_tls(app).await;
+        let (p, s) = bind_app_tls(app, true).await;
         tokio::spawn(s);
         p
     } else {
@@ -151,7 +157,7 @@ fn root_cert() -> rcgen::CertifiedKey {
     rcgen::CertifiedKey { cert, key_pair }
 }
 
-async fn setup_tls<B>(app: Router, without_cert: bool, http_server: bool) -> Setup<B>
+async fn setup_tls<B>(app: Router, without_cert: bool, http_server: bool, h2: bool) -> Setup<B>
 where
     B: Body<Data = Bytes> + Send + Unpin + 'static,
     B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
@@ -161,7 +167,7 @@ where
         tokio::spawn(s);
         p
     } else {
-        let (p, s) = bind_app_tls(app).await;
+        let (p, s) = bind_app_tls(app, h2).await;
         tokio::spawn(s);
         p
     };
@@ -223,8 +229,15 @@ async fn read_body(
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_simple() {
-    let app = Router::new().route("/", get(|| async { "Hello, World!" }));
+    let app = Router::new().route(
+        "/",
+        get(|req: Request| async move {
+            assert_eq!(req.version(), hyper::http::Version::HTTP_11);
+            "Hello, World!"
+        }),
+    );
 
     let mut setup = setup(app, false).await;
 
@@ -485,10 +498,66 @@ async fn upgrade_handler<B: Send + 'static>(req: axum::http::Request<B>) -> impl
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_tls_simple() {
-    let app = Router::new().route("/", get(|| async { "Hello, World!" }));
+    let app = Router::new().route(
+        "/",
+        get(|req: Request| async move {
+            assert_eq!(req.version(), hyper::http::Version::HTTP_2);
+            "Hello, World!"
+        }),
+    );
 
-    let mut setup = setup_tls(app, false, false).await;
+    let mut setup = setup_tls(app, false, false, true).await;
+
+    let response = tokio::spawn(
+        setup
+            .client
+            .get(format!("https://127.0.0.1:{}/", setup.server_port))
+            .send(),
+    );
+
+    let communication = setup.proxy.next().await.unwrap();
+    assert_eq!(communication.request.method(), hyper::Method::CONNECT);
+    communication
+        .request_back
+        .send(communication.request)
+        .unwrap();
+
+    let communication = setup.proxy.next().await.unwrap();
+    let uri = communication.request.uri().clone();
+    communication
+        .request_back
+        .send(communication.request)
+        .unwrap();
+
+    let response = response.await.unwrap().unwrap();
+
+    assert_eq!(response.version(), hyper::http::Version::HTTP_2);
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.bytes().await.unwrap().as_ref(), b"Hello, World!");
+
+    assert_eq!(
+        uri.to_string(),
+        format!("https://127.0.0.1:{}/", setup.server_port)
+    );
+
+    let body = read_body(communication.response.await.unwrap().unwrap().body_mut()).await;
+    assert_eq!(String::from_utf8(body).unwrap(), "Hello, World!");
+}
+
+#[tokio::test]
+#[traced_test]
+async fn test_tls_match_http_version() {
+    let app = Router::new().route(
+        "/",
+        get(|req: Request| async move {
+            assert_eq!(req.version(), hyper::http::Version::HTTP_11);
+            "Hello, World!"
+        }),
+    );
+
+    let mut setup = setup_tls(app, false, false, false).await;
 
     let response = tokio::spawn(
         setup
@@ -514,6 +583,7 @@ async fn test_tls_simple() {
 
     let response = response.await.unwrap().unwrap();
 
+    assert_eq!(response.version(), hyper::http::Version::HTTP_11);
     assert_eq!(response.status(), 200);
     assert_eq!(response.bytes().await.unwrap().as_ref(), b"Hello, World!");
 
@@ -531,13 +601,11 @@ async fn test_tls_simple() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_tls_modify_url_https_to_https() {
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .init();
     let app = Router::new().route("/", get(|| async { "Hello, World!" }));
 
-    let mut setup = setup_tls(app, false, false).await;
+    let mut setup = setup_tls(app, false, false, true).await;
 
     let response = tokio::spawn(setup.client.get("https://example.com/").send());
 
@@ -547,7 +615,7 @@ async fn test_tls_modify_url_https_to_https() {
     comm.request_back.send(comm.request).unwrap();
 
     let mut comm = setup.proxy.next().await.unwrap();
-    assert_eq!(comm.request.uri().to_string(), "https://example.com:443/");
+    assert_eq!(comm.request.uri().to_string(), "https://example.com/");
     *comm.request.uri_mut() = format!("https://127.0.0.1:{}/", setup.server_port)
         .parse()
         .unwrap();
@@ -571,7 +639,7 @@ async fn test_tls_modify_url_https_to_https() {
 async fn test_tls_modify_url_https_to_http() {
     let app = Router::new().route("/", get(|| async { "Hello, World!" }));
 
-    let mut setup = setup_tls(app, false, true).await;
+    let mut setup = setup_tls(app, false, true, true).await;
 
     let response = tokio::spawn(setup.client.get("https://example.com/").send());
 
@@ -581,7 +649,7 @@ async fn test_tls_modify_url_https_to_http() {
     comm.request_back.send(comm.request).unwrap();
 
     let mut comm = setup.proxy.next().await.unwrap();
-    assert_eq!(comm.request.uri().to_string(), "https://example.com:443/");
+    assert_eq!(comm.request.uri().to_string(), "https://example.com/");
     *comm.request.uri_mut() = format!("http://127.0.0.1:{}/", setup.server_port)
         .parse()
         .unwrap();
@@ -605,7 +673,7 @@ async fn test_tls_modify_url_https_to_http() {
 async fn test_tls_simple_tunnel() {
     let app = Router::new().route("/", get(|| async { "Hello, World!" }));
 
-    let mut setup: Setup<Incoming> = setup_tls(app, true, false).await;
+    let mut setup: Setup<Incoming> = setup_tls(app, true, false, true).await;
 
     let response = tokio::spawn(
         setup
@@ -627,7 +695,7 @@ async fn test_tls_simple_tunnel() {
 async fn test_tls_keep_alive() {
     let app = Router::new().route("/", get(|| async { "Hello, World!" }));
 
-    let mut setup = setup_tls(app, false, false).await;
+    let mut setup = setup_tls(app, false, false, false).await;
 
     let client = setup.client.clone();
 
@@ -687,7 +755,7 @@ async fn test_tls_sse() {
         }),
     );
 
-    let mut setup = setup_tls(app, false, false).await;
+    let mut setup = setup_tls(app, false, false, true).await;
     tokio::spawn(
         setup
             .client
@@ -716,9 +784,10 @@ async fn test_tls_sse() {
 }
 
 #[tokio::test]
+#[traced_test]
 async fn test_tls_upgrade() {
     let app = Router::new().route("/upgrade", get(upgrade_handler));
-    let mut setup = setup_tls(app, false, false).await;
+    let mut setup = setup_tls(app, false, false, false).await;
 
     let res = tokio::spawn(
         setup
