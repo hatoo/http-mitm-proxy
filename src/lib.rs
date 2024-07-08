@@ -260,11 +260,11 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
                                 if uri.authority() == Some(&connect_authority) {
                                     send_request_connect.send_request(req).await
                                 } else {
-                                    let mut sender = proxy.connect(req.uri()).await.unwrap();
+                                    let mut sender = proxy.connect(req.uri()).await.expect(&format!("connect uri: {}", req.uri()));
                                     sender.send_request(req).await
                                 }
                             } else {
-                                let mut sender = proxy.connect(req.uri()).await.unwrap();
+                                let mut sender = proxy.connect(req.uri()).await.expect(&format!("connect uri: {}", req.uri()));
                                 sender.send_request(req).await
                             };
 
@@ -342,7 +342,7 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
             ))
         } else {
             let uri = req.uri().clone();
-            let mut sender = proxy.connect(req.uri()).await.unwrap();
+            let mut sender = proxy.connect(req.uri()).await.expect(&format!("connect uri: {}", req.uri()));
 
             let (req, req_parts) = dup_request(req);
             let (status, res, res_upgrade) = match sender.send_request(req).await {
