@@ -59,8 +59,6 @@ pub struct MitmProxy<C> {
     ///
     /// If None, proxy will just tunnel HTTPS traffic and will not observe HTTPS traffic.
     pub root_cert: Option<C>,
-    /// TLS connector to connect from proxy to server.
-    pub tls_connector: tokio_native_tls::native_tls::TlsConnector,
 }
 
 struct MitmProxyImpl<C> {
@@ -69,14 +67,8 @@ struct MitmProxyImpl<C> {
 }
 
 impl<C> MitmProxy<C> {
-    pub fn new(
-        root_cert: Option<C>,
-        tls_connector: tokio_native_tls::native_tls::TlsConnector,
-    ) -> Self {
-        Self {
-            root_cert,
-            tls_connector,
-        }
+    pub fn new(root_cert: Option<C>) -> Self {
+        Self { root_cert }
     }
 }
 
@@ -239,8 +231,8 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
     }
 }
 
-pub struct DefaultSendRequest(tokio_native_tls::TlsConnector);
-impl DefaultSendRequest {
+pub struct DefaultClient(tokio_native_tls::TlsConnector);
+impl DefaultClient {
     pub fn new(tls_connector: native_tls::TlsConnector) -> Self {
         Self(tls_connector.into())
     }

@@ -2,7 +2,7 @@ use std::{path::PathBuf, sync::Arc};
 
 use clap::{Args, Parser};
 use futures::StreamExt;
-use http_mitm_proxy::{DefaultSendRequest, MitmProxy};
+use http_mitm_proxy::{DefaultClient, MitmProxy};
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
@@ -70,15 +70,9 @@ async fn main() {
     let proxy = MitmProxy::new(
         // This is the root cert that will be used to sign the fake certificates
         Some(root_cert),
-        // This is the connector that will be used to connect to the upstream server from proxy
-        tokio_native_tls::native_tls::TlsConnector::builder()
-            // You must set ALPN if you want to support HTTP/2
-            .request_alpns(&["h2", "http/1.1"])
-            .build()
-            .unwrap(),
     );
 
-    let client = Arc::new(DefaultSendRequest::new(
+    let client = Arc::new(DefaultClient::new(
         tokio_native_tls::native_tls::TlsConnector::builder()
             // You must set ALPN if you want to support HTTP/2
             .request_alpns(&["h2", "http/1.1"])
@@ -90,9 +84,15 @@ async fn main() {
             let client = client.clone();
             async move {
                 let uri = req.uri().clone();
+
+                // You can modify request here
+                // or You can just return response anyware
+
                 let (res, _upgrade) = client.send_request(req).await?;
 
                 println!("{} -> {}", uri, res.status());
+
+                // You can modify response here
 
                 Ok(res)
             }
