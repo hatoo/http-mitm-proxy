@@ -1,6 +1,6 @@
 #![doc = include_str!("../README.md")]
 
-use bytes::Bytes;
+use bytes::{Buf, Bytes};
 use futures::{
     channel::mpsc::{UnboundedReceiver, UnboundedSender},
     lock::Mutex,
@@ -10,10 +10,13 @@ use http_body_util::{combinators::BoxBody, BodyExt, Empty, StreamBody};
 use hyper::{
     body::{Body, Frame, Incoming},
     client, header, server,
-    service::service_fn,
+    service::{service_fn, HttpService},
     Method, Request, Response, StatusCode, Uri,
 };
-use hyper_util::rt::{TokioExecutor, TokioIo};
+use hyper_util::{
+    rt::{TokioExecutor, TokioIo},
+    service::TowerToHyperService,
+};
 use std::{
     borrow::Borrow,
     future::Future,
@@ -25,6 +28,7 @@ use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream, ToSocketAddrs},
 };
+use tower::{MakeService, Service};
 
 pub use futures;
 pub use hyper;
@@ -84,6 +88,60 @@ pub struct Upgrade {
     pub server_to_client: UnboundedReceiver<Vec<u8>>,
 }
 
+// pub type Handler<B, E> = Fn(Request<Incoming>) -> Result<Response<B>, E>;
+
+impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
+    pub async fn bind<A: ToSocketAddrs, S, B, E, F>(
+        self,
+        addr: A,
+        service: S,
+    ) -> Result<impl Future<Output = ()>, std::io::Error>
+    where
+        B: Body + Send + 'static,
+        <B as Body>::Data: Send,
+        <B as Body>::Error: Into<Box<(dyn std::error::Error + std::marker::Send + Sync + 'static)>>,
+        E: std::error::Error + Send + Sync + 'static,
+        S: Fn(Request<Incoming>) -> F + Send + Sync + Clone + 'static,
+        F: Future<Output = Result<Response<B>, E>> + Send,
+    {
+        let listener = TcpListener::bind(addr).await?;
+
+        Ok(async move {
+            loop {
+                let Ok((stream, client_addr)) = listener.accept().await else {
+                    continue;
+                };
+
+                let service = service.clone();
+
+                tokio::spawn(async move {
+                    if let Err(err) = server::conn::http1::Builder::new()
+                        .preserve_header_case(true)
+                        .title_case_headers(true)
+                        .serve_connection(
+                            TokioIo::new(stream),
+                            service_fn(|req| Self::proxy(req, service.clone())),
+                        )
+                        .with_upgrades()
+                        .await
+                    {
+                        tracing::error!("Error in proxy: {}", err);
+                    }
+                });
+            }
+        })
+    }
+
+    async fn proxy<S, B, E, F>(req: Request<Incoming>, service: S) -> Result<Response<B>, E>
+    where
+        S: Fn(Request<Incoming>) -> F,
+        F: Future<Output = Result<Response<B>, E>>,
+    {
+        service(req).await
+    }
+}
+
+/*
 /// Communication between client and server.
 ///
 /// Note: http-mitm-proxy observe by Communication basis, not Connection basis. Some Communications may belong to the same connection using keep-alive.
@@ -688,3 +746,4 @@ async fn send_and_receive_request<B>(
         (None, res_tx, upgrade_tx)
     }
 }
+*/
