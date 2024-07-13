@@ -31,6 +31,23 @@ pub use hyper;
 pub use tokio_native_tls;
 
 mod tls;
+
+#[derive(thiserror::Error, Debug)]
+pub enum Error {
+    #[error("{0} doesn't have an valid host")]
+    InvalidHost(Uri),
+    #[error(transparent)]
+    IoError(#[from] std::io::Error),
+    #[error(transparent)]
+    NativeTlsError(#[from] tokio_native_tls::native_tls::Error),
+    #[error(transparent)]
+    HyperError(#[from] hyper::Error),
+    #[error("Failed to connect to {0}, {1}")]
+    ConnectError(Uri, hyper::Error),
+    #[error("Failed to connect with TLS to {0}, {1}")]
+    TlsConnectError(Uri, native_tls::Error),
+}
+
 #[derive(Clone)]
 /// The main struct to run proxy server
 pub struct MitmProxy<C> {
@@ -164,7 +181,7 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
         req: Request<hyper::body::Incoming>,
         tx: UnboundedSender<Communication<B>>,
         client_addr: std::net::SocketAddr,
-    ) -> Result<Response<BoxBody<Bytes, Arc<hyper::Error>>>, hyper::Error>
+    ) -> Result<Response<BoxBody<Bytes, Arc<hyper::Error>>>, Error>
     where
         B: Body<Data = Bytes> + Unpin + Send + 'static,
         B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
@@ -250,9 +267,7 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
                             let (Some(req), res_tx, upgrade_tx) =
                                 send_and_receive_request(&tx, client_addr, req).await
                             else {
-                                return Ok::<_, hyper::Error>(no_body(
-                                    StatusCode::INTERNAL_SERVER_ERROR,
-                                ));
+                                return Ok::<_, Error>(no_body(StatusCode::INTERNAL_SERVER_ERROR));
                             };
 
                             let uri = req.uri().clone();
@@ -270,27 +285,17 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
                                     .await
                                     .is_err()
                                     {
-                                        let sender = proxy
-                                            .connect(req.uri())
-                                            .await
-                                            .expect(&format!("connect uri: {}", req.uri()));
-
+                                        let sender = proxy.connect(req.uri()).await?;
                                         *send_request_connect = sender;
                                     }
 
                                     send_request_connect.send_request(req).await
                                 } else {
-                                    let mut sender = proxy
-                                        .connect(req.uri())
-                                        .await
-                                        .expect(&format!("connect uri: {}", req.uri()));
+                                    let mut sender = proxy.connect(req.uri()).await?;
                                     sender.send_request(req).await
                                 }
                             } else {
-                                let mut sender = proxy
-                                    .connect(req.uri())
-                                    .await
-                                    .expect(&format!("connect uri: {}", req.uri()));
+                                let mut sender = proxy.connect(req.uri()).await?;
                                 sender.send_request(req).await
                             };
 
@@ -304,7 +309,7 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
                                 Err(err) => {
                                     tracing::error!("Failed to send request to {} {}", uri, err);
                                     let _ = res_tx.send(Err(err));
-                                    return Ok::<_, hyper::Error>(no_body(
+                                    return Ok::<_, Error>(no_body(
                                         StatusCode::INTERNAL_SERVER_ERROR,
                                     ));
                                 }
@@ -338,17 +343,21 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
                         }
                     };
 
-                    if client.get_ref().1.alpn_protocol() == Some(b"h2") {
-                        let _ = server::conn::http2::Builder::new(TokioExecutor::new())
+                    let res = if client.get_ref().1.alpn_protocol() == Some(b"h2") {
+                        server::conn::http2::Builder::new(TokioExecutor::new())
                             .serve_connection(TokioIo::new(client), service_fn(f))
-                            .await;
+                            .await
                     } else {
-                        let _ = server::conn::http1::Builder::new()
+                        server::conn::http1::Builder::new()
                             .preserve_header_case(true)
                             .title_case_headers(true)
                             .serve_connection(TokioIo::new(client), service_fn(f))
                             .with_upgrades()
-                            .await;
+                            .await
+                    };
+
+                    if let Err(err) = res {
+                        tracing::error!("Error in proxy: {}", err);
                     }
                 } else {
                     let Ok(mut server) = TcpStream::connect(connect_authority.as_str()).await
@@ -368,10 +377,7 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
             ))
         } else {
             let uri = req.uri().clone();
-            let mut sender = proxy
-                .connect(req.uri())
-                .await
-                .expect(&format!("connect uri: {}", req.uri()));
+            let mut sender = proxy.connect(req.uri()).await?;
 
             let (req, req_parts) = dup_request(req);
             let (status, res, res_upgrade) = match sender.send_request(req).await {
@@ -459,13 +465,13 @@ impl<B> SendRequest<B> {
 }
 
 impl<C> MitmProxyImpl<C> {
-    async fn connect<B>(&self, uri: &Uri) -> anyhow::Result<SendRequest<B>>
+    async fn connect<B>(&self, uri: &Uri) -> Result<SendRequest<B>, Error>
     where
         B: Body + Unpin + Send + 'static,
         B::Data: Send,
         B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
     {
-        let host = uri.host().ok_or_else(|| anyhow::anyhow!("Invalid host"))?;
+        let host = uri.host().ok_or_else(|| Error::InvalidHost(uri.clone()))?;
         let port =
             uri.port_u16()
                 .unwrap_or(if uri.scheme() == Some(&hyper::http::uri::Scheme::HTTPS) {
@@ -479,7 +485,11 @@ impl<C> MitmProxyImpl<C> {
         let _ = tcp.set_nodelay(true);
 
         if uri.scheme() == Some(&hyper::http::uri::Scheme::HTTPS) {
-            let tls = self.tls_connector.connect(host, tcp).await?;
+            let tls = self
+                .tls_connector
+                .connect(host, tcp)
+                .await
+                .map_err(|err| Error::TlsConnectError(uri.clone(), err))?;
 
             if let Ok(Some(true)) = tls
                 .get_ref()
@@ -488,7 +498,8 @@ impl<C> MitmProxyImpl<C> {
             {
                 let (sender, conn) = client::conn::http2::Builder::new(TokioExecutor::new())
                     .handshake(TokioIo::new(tls))
-                    .await?;
+                    .await
+                    .map_err(|err| Error::ConnectError(uri.clone(), err))?;
 
                 tokio::spawn(conn);
 
@@ -498,7 +509,8 @@ impl<C> MitmProxyImpl<C> {
                     .preserve_header_case(true)
                     .title_case_headers(true)
                     .handshake(TokioIo::new(tls))
-                    .await?;
+                    .await
+                    .map_err(|err| Error::ConnectError(uri.clone(), err))?;
 
                 tokio::spawn(conn.with_upgrades());
 
@@ -509,7 +521,8 @@ impl<C> MitmProxyImpl<C> {
                 .preserve_header_case(true)
                 .title_case_headers(true)
                 .handshake(TokioIo::new(tcp))
-                .await?;
+                .await
+                .map_err(|err| Error::ConnectError(uri.clone(), err))?;
             tokio::spawn(conn.with_upgrades());
             Ok(SendRequest::Http1(sender))
         }
