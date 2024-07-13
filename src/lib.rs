@@ -84,6 +84,7 @@ pub struct Upgrade {
     pub server_to_client: UnboundedReceiver<Vec<u8>>,
 }
 
+#[derive(Debug)]
 pub enum RequestBack<B1, B2> {
     Request(Request<B1>),
     Direct(Response<B2>),
@@ -169,7 +170,7 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
         B1: Body<Data = Bytes> + Unpin + Send + 'static,
         B1::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
         B2: Body<Data = Bytes> + Unpin + Send + Sync + 'static,
-        B2::Error: Into<Box<(dyn std::error::Error + std::marker::Send + Sync)>>,
+        B2::Error: Into<Box<(dyn std::error::Error + Send + Sync)>>,
     {
         if let Err(err) = server::conn::http1::Builder::new()
             .preserve_header_case(true)

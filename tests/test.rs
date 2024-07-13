@@ -17,9 +17,10 @@ use futures::{
     stream::{self, BoxStream},
     StreamExt,
 };
-use http_mitm_proxy::Communication;
+use http_body_util::Empty;
+use http_mitm_proxy::{Communication, RequestBack};
 use hyper::{
-    body::{Body, Frame, Incoming},
+    body::{Body, Frame},
     header, HeaderMap,
 };
 use hyper_util::rt::TokioIo;
@@ -91,17 +92,19 @@ fn client(proxy_port: u16) -> reqwest::Client {
         .unwrap()
 }
 
-struct Setup<B> {
+struct Setup<B1, B2> {
     _proxy_port: u16,
     server_port: u16,
-    proxy: BoxStream<'static, Communication<B>>,
+    proxy: BoxStream<'static, Communication<B1, B2>>,
     client: Client,
 }
 
-async fn setup<B>(app: Router, https_server: bool) -> Setup<B>
+async fn setup<B1, B2>(app: Router, https_server: bool) -> Setup<B1, B2>
 where
-    B: Body<Data = Bytes> + Send + Unpin + 'static,
-    B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+    B1: Body<Data = Bytes> + Send + Unpin + 'static,
+    B1::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+    B2: Body<Data = Bytes> + Send + Sync + Unpin + 'static,
+    B2::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
     let server_port = if https_server {
         let (p, s) = bind_app_tls(app, true).await;
@@ -157,10 +160,17 @@ fn root_cert() -> rcgen::CertifiedKey {
     rcgen::CertifiedKey { cert, key_pair }
 }
 
-async fn setup_tls<B>(app: Router, without_cert: bool, http_server: bool, h2: bool) -> Setup<B>
+async fn setup_tls<B1, B2>(
+    app: Router,
+    without_cert: bool,
+    http_server: bool,
+    h2: bool,
+) -> Setup<B1, B2>
 where
-    B: Body<Data = Bytes> + Send + Unpin + 'static,
-    B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+    B1: Body<Data = Bytes> + Send + Unpin + 'static,
+    B1::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+    B2: Body<Data = Bytes> + Send + Sync + Unpin + 'static,
+    B2::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
     let server_port = if http_server {
         let (p, s) = bind_app(app).await;
@@ -239,7 +249,7 @@ async fn test_simple() {
         }),
     );
 
-    let mut setup = setup(app, false).await;
+    let mut setup: Setup<_, Empty<Bytes>> = setup(app, false).await;
 
     let response = tokio::spawn(
         setup
@@ -253,7 +263,7 @@ async fn test_simple() {
     let headers = communication.request.headers().clone();
     communication
         .request_back
-        .send(communication.request)
+        .send(RequestBack::Request(communication.request))
         .unwrap();
 
     let response = response.await.unwrap().unwrap();
@@ -289,7 +299,7 @@ async fn test_modify_header() {
         }),
     );
 
-    let mut setup = setup(app, false).await;
+    let mut setup: Setup<_, Empty<Bytes>> = setup(app, false).await;
 
     let response = tokio::spawn(
         setup
@@ -307,7 +317,7 @@ async fn test_modify_header() {
     );
     communication
         .request_back
-        .send(communication.request)
+        .send(RequestBack::Request(communication.request))
         .unwrap();
 
     let response = response.await.unwrap().unwrap();
@@ -331,7 +341,7 @@ async fn test_modify_header() {
 async fn test_modify_url_http_to_http() {
     let app = Router::new().route("/", get(|| async { "Hello, World!" }));
 
-    let mut setup = setup(app, false).await;
+    let mut setup: Setup<_, Empty<Bytes>> = setup(app, false).await;
 
     let response = tokio::spawn(setup.client.get("http://example.com/").send());
 
@@ -343,7 +353,9 @@ async fn test_modify_url_http_to_http() {
         .parse()
         .unwrap();
 
-    comm.request_back.send(comm.request).unwrap();
+    comm.request_back
+        .send(RequestBack::Request(comm.request))
+        .unwrap();
 
     let response = response.await.unwrap().unwrap();
 
@@ -358,7 +370,7 @@ async fn test_modify_url_http_to_http() {
 async fn test_modify_url_http_to_https() {
     let app = Router::new().route("/", get(|| async { "Hello, World!" }));
 
-    let mut setup = setup(app, true).await;
+    let mut setup: Setup<_, Empty<Bytes>> = setup(app, true).await;
 
     let response = tokio::spawn(setup.client.get("http://example.com/").send());
 
@@ -370,7 +382,9 @@ async fn test_modify_url_http_to_https() {
         .parse()
         .unwrap();
 
-    comm.request_back.send(comm.request).unwrap();
+    comm.request_back
+        .send(RequestBack::Request(comm.request))
+        .unwrap();
 
     let response = response.await.unwrap().unwrap();
 
@@ -385,7 +399,7 @@ async fn test_modify_url_http_to_https() {
 async fn test_keep_alive() {
     let app = Router::new().route("/", get(|| async { "Hello, World!" }));
 
-    let mut setup = setup(app, false).await;
+    let mut setup: Setup<_, Empty<Bytes>> = setup(app, false).await;
 
     // reqwest wii use single connection with keep-alive
     for _ in 0..16 {
@@ -401,7 +415,7 @@ async fn test_keep_alive() {
         let headers = communication.request.headers().clone();
         communication
             .request_back
-            .send(communication.request)
+            .send(RequestBack::Request(communication.request))
             .unwrap();
 
         assert_eq!(
@@ -429,7 +443,7 @@ async fn test_sse() {
         }),
     );
 
-    let mut setup = setup(app, false).await;
+    let mut setup: Setup<_, Empty<Bytes>> = setup(app, false).await;
     tokio::spawn(
         setup
             .client
@@ -440,7 +454,7 @@ async fn test_sse() {
     let communication = setup.proxy.next().await.unwrap();
     communication
         .request_back
-        .send(communication.request)
+        .send(RequestBack::Request(communication.request))
         .unwrap();
     let body = read_body(communication.response.await.unwrap().unwrap().body_mut()).await;
 
@@ -453,7 +467,7 @@ async fn test_sse() {
 #[tokio::test]
 async fn test_upgrade() {
     let app = Router::new().route("/upgrade", get(upgrade_handler));
-    let mut setup = setup(app, false).await;
+    let mut setup: Setup<_, Empty<Bytes>> = setup(app, false).await;
 
     let res = tokio::spawn(
         setup
@@ -465,7 +479,9 @@ async fn test_upgrade() {
     );
 
     let comm = setup.proxy.next().await.unwrap();
-    comm.request_back.send(comm.request).unwrap();
+    comm.request_back
+        .send(RequestBack::Request(comm.request))
+        .unwrap();
 
     let mut stream = res.await.unwrap().unwrap().upgrade().await.unwrap();
     let mut buf = [0u8; 4];
@@ -508,7 +524,7 @@ async fn test_tls_simple() {
         }),
     );
 
-    let mut setup = setup_tls(app, false, false, true).await;
+    let mut setup: Setup<_, Empty<Bytes>> = setup_tls(app, false, false, true).await;
 
     let response = tokio::spawn(
         setup
@@ -521,14 +537,14 @@ async fn test_tls_simple() {
     assert_eq!(communication.request.method(), hyper::Method::CONNECT);
     communication
         .request_back
-        .send(communication.request)
+        .send(RequestBack::Request(communication.request))
         .unwrap();
 
     let communication = setup.proxy.next().await.unwrap();
     let uri = communication.request.uri().clone();
     communication
         .request_back
-        .send(communication.request)
+        .send(RequestBack::Request(communication.request))
         .unwrap();
 
     let response = response.await.unwrap().unwrap();
@@ -557,7 +573,7 @@ async fn test_tls_match_http_version() {
         }),
     );
 
-    let mut setup = setup_tls(app, false, false, false).await;
+    let mut setup: Setup<_, Empty<Bytes>> = setup_tls(app, false, false, false).await;
 
     let response = tokio::spawn(
         setup
@@ -570,7 +586,7 @@ async fn test_tls_match_http_version() {
     assert_eq!(communication.request.method(), hyper::Method::CONNECT);
     communication
         .request_back
-        .send(communication.request)
+        .send(RequestBack::Request(communication.request))
         .unwrap();
 
     let communication = setup.proxy.next().await.unwrap();
@@ -578,7 +594,7 @@ async fn test_tls_match_http_version() {
     let headers = communication.request.headers().clone();
     communication
         .request_back
-        .send(communication.request)
+        .send(RequestBack::Request(communication.request))
         .unwrap();
 
     let response = response.await.unwrap().unwrap();
@@ -605,14 +621,16 @@ async fn test_tls_match_http_version() {
 async fn test_tls_modify_url_https_to_https() {
     let app = Router::new().route("/", get(|| async { "Hello, World!" }));
 
-    let mut setup = setup_tls(app, false, false, true).await;
+    let mut setup: Setup<_, Empty<Bytes>> = setup_tls(app, false, false, true).await;
 
     let response = tokio::spawn(setup.client.get("https://example.com/").send());
 
     let comm = setup.proxy.next().await.unwrap();
     assert_eq!(comm.request.method(), hyper::Method::CONNECT);
     assert_eq!(comm.request.uri().to_string(), "example.com:443");
-    comm.request_back.send(comm.request).unwrap();
+    comm.request_back
+        .send(RequestBack::Request(comm.request))
+        .unwrap();
 
     let mut comm = setup.proxy.next().await.unwrap();
     assert_eq!(comm.request.uri().to_string(), "https://example.com/");
@@ -624,7 +642,9 @@ async fn test_tls_modify_url_https_to_https() {
         header::HOST,
         HeaderValue::from_bytes(format!("127.0.0.1:{}", setup.server_port).as_bytes()).unwrap(),
     );
-    comm.request_back.send(comm.request).unwrap();
+    comm.request_back
+        .send(RequestBack::Request(comm.request))
+        .unwrap();
 
     let response = response.await.unwrap().unwrap();
 
@@ -639,14 +659,16 @@ async fn test_tls_modify_url_https_to_https() {
 async fn test_tls_modify_url_https_to_http() {
     let app = Router::new().route("/", get(|| async { "Hello, World!" }));
 
-    let mut setup = setup_tls(app, false, true, true).await;
+    let mut setup: Setup<_, Empty<Bytes>> = setup_tls(app, false, true, true).await;
 
     let response = tokio::spawn(setup.client.get("https://example.com/").send());
 
     let comm = setup.proxy.next().await.unwrap();
     assert_eq!(comm.request.method(), hyper::Method::CONNECT);
     assert_eq!(comm.request.uri().to_string(), "example.com:443");
-    comm.request_back.send(comm.request).unwrap();
+    comm.request_back
+        .send(RequestBack::Request(comm.request))
+        .unwrap();
 
     let mut comm = setup.proxy.next().await.unwrap();
     assert_eq!(comm.request.uri().to_string(), "https://example.com/");
@@ -658,7 +680,9 @@ async fn test_tls_modify_url_https_to_http() {
         header::HOST,
         HeaderValue::from_bytes(format!("127.0.0.1:{}", setup.server_port).as_bytes()).unwrap(),
     );
-    comm.request_back.send(comm.request).unwrap();
+    comm.request_back
+        .send(RequestBack::Request(comm.request))
+        .unwrap();
 
     let response = response.await.unwrap().unwrap();
 
@@ -673,7 +697,7 @@ async fn test_tls_modify_url_https_to_http() {
 async fn test_tls_simple_tunnel() {
     let app = Router::new().route("/", get(|| async { "Hello, World!" }));
 
-    let mut setup: Setup<Incoming> = setup_tls(app, true, false, true).await;
+    let mut setup: Setup<_, Empty<Bytes>> = setup_tls(app, true, false, true).await;
 
     let response = tokio::spawn(
         setup
@@ -684,7 +708,9 @@ async fn test_tls_simple_tunnel() {
 
     let comm = setup.proxy.next().await.unwrap();
     assert_eq!(comm.request.method(), hyper::Method::CONNECT);
-    comm.request_back.send(comm.request).unwrap();
+    comm.request_back
+        .send(RequestBack::Request(comm.request))
+        .unwrap();
 
     let response = response.await.unwrap().unwrap();
     assert_eq!(response.status(), 200);
@@ -695,7 +721,7 @@ async fn test_tls_simple_tunnel() {
 async fn test_tls_keep_alive() {
     let app = Router::new().route("/", get(|| async { "Hello, World!" }));
 
-    let mut setup = setup_tls(app, false, false, false).await;
+    let mut setup: Setup<_, Empty<Bytes>> = setup_tls(app, false, false, false).await;
 
     let client = setup.client.clone();
 
@@ -718,7 +744,7 @@ async fn test_tls_keep_alive() {
             assert_eq!(communication.request.method(), hyper::Method::CONNECT);
             communication
                 .request_back
-                .send(communication.request)
+                .send(RequestBack::Request(communication.request))
                 .unwrap();
         }
 
@@ -727,7 +753,7 @@ async fn test_tls_keep_alive() {
         let headers = communication.request.headers().clone();
         communication
             .request_back
-            .send(communication.request)
+            .send(RequestBack::Request(communication.request))
             .unwrap();
 
         assert_eq!(
@@ -755,7 +781,7 @@ async fn test_tls_sse() {
         }),
     );
 
-    let mut setup = setup_tls(app, false, false, true).await;
+    let mut setup: Setup<_, Empty<Bytes>> = setup_tls(app, false, false, true).await;
     tokio::spawn(
         setup
             .client
@@ -767,13 +793,13 @@ async fn test_tls_sse() {
     assert_eq!(communication.request.method(), hyper::Method::CONNECT);
     communication
         .request_back
-        .send(communication.request)
+        .send(RequestBack::Request(communication.request))
         .unwrap();
 
     let communication = setup.proxy.next().await.unwrap();
     communication
         .request_back
-        .send(communication.request)
+        .send(RequestBack::Request(communication.request))
         .unwrap();
     let body = read_body(communication.response.await.unwrap().unwrap().body_mut()).await;
 
@@ -787,7 +813,7 @@ async fn test_tls_sse() {
 #[traced_test]
 async fn test_tls_upgrade() {
     let app = Router::new().route("/upgrade", get(upgrade_handler));
-    let mut setup = setup_tls(app, false, false, false).await;
+    let mut setup: Setup<_, Empty<Bytes>> = setup_tls(app, false, false, false).await;
 
     let res = tokio::spawn(
         setup
@@ -800,10 +826,14 @@ async fn test_tls_upgrade() {
 
     let comm = setup.proxy.next().await.unwrap();
     assert_eq!(comm.request.method(), hyper::Method::CONNECT);
-    comm.request_back.send(comm.request).unwrap();
+    comm.request_back
+        .send(RequestBack::Request(comm.request))
+        .unwrap();
 
     let comm = setup.proxy.next().await.unwrap();
-    comm.request_back.send(comm.request).unwrap();
+    comm.request_back
+        .send(RequestBack::Request(comm.request))
+        .unwrap();
 
     let res = res.await.unwrap().unwrap();
     let mut stream = res.upgrade().await.unwrap();
