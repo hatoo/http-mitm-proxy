@@ -141,6 +141,130 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
     }
 }
 
+pub struct DefaultSendRequest(tokio_native_tls::TlsConnector);
+impl DefaultSendRequest {
+    pub fn new(tls_connector: native_tls::TlsConnector) -> Self {
+        Self(tls_connector.into())
+    }
+
+    pub async fn send_request<B>(
+        &self,
+        req: Request<B>,
+    ) -> Result<(Response<Incoming>, Option<Upgrade>), hyper::Error>
+    where
+        B: Body + Unpin + Send + 'static,
+        B::Data: Send,
+        B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+    {
+        // TODO
+        let mut send_request = self.connect(req.uri()).await.unwrap();
+
+        let (req_parts, req_body) = req.into_parts();
+
+        let res = send_request
+            .send_request(Request::from_parts(req_parts.clone(), req_body))
+            .await?;
+
+        if res.status() == StatusCode::SWITCHING_PROTOCOLS {
+            let (tx_client, rx_client) = futures::channel::mpsc::unbounded();
+            let (tx_server, rx_server) = futures::channel::mpsc::unbounded();
+
+            let (res_parts, res_body) = res.into_parts();
+
+            let res0 = Response::from_parts(res_parts.clone(), Empty::<Bytes>::new());
+            tokio::task::spawn(async move {
+                if let (Ok(client), Ok(server)) = (
+                    hyper::upgrade::on(Request::from_parts(req_parts, Empty::<Bytes>::new())).await,
+                    hyper::upgrade::on(res0).await,
+                ) {
+                    upgrade(
+                        TokioIo::new(client),
+                        TokioIo::new(server),
+                        tx_client,
+                        tx_server,
+                    )
+                    .await;
+                } else {
+                    tracing::error!("Failed to upgrade connection (HTTP)");
+                }
+            });
+
+            return Ok((
+                Response::from_parts(res_parts, res_body),
+                Some(Upgrade {
+                    client_to_server: rx_client,
+                    server_to_client: rx_server,
+                }),
+            ));
+        }
+
+        Ok((res, None))
+    }
+
+    async fn connect<B>(&self, uri: &Uri) -> Result<SendRequest<B>, Error>
+    where
+        B: Body + Unpin + Send + 'static,
+        B::Data: Send,
+        B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+    {
+        let host = uri.host().ok_or_else(|| Error::InvalidHost(uri.clone()))?;
+        let port =
+            uri.port_u16()
+                .unwrap_or(if uri.scheme() == Some(&hyper::http::uri::Scheme::HTTPS) {
+                    443
+                } else {
+                    80
+                });
+
+        let tcp = TcpStream::connect((host, port)).await?;
+        // This is actually needed to some servers
+        let _ = tcp.set_nodelay(true);
+
+        if uri.scheme() == Some(&hyper::http::uri::Scheme::HTTPS) {
+            let tls = self
+                .0
+                .connect(host, tcp)
+                .await
+                .map_err(|err| Error::TlsConnectError(uri.clone(), err))?;
+
+            if let Ok(Some(true)) = tls
+                .get_ref()
+                .negotiated_alpn()
+                .map(|a| a.map(|b| b == b"h2"))
+            {
+                let (sender, conn) = client::conn::http2::Builder::new(TokioExecutor::new())
+                    .handshake(TokioIo::new(tls))
+                    .await
+                    .map_err(|err| Error::ConnectError(uri.clone(), err))?;
+
+                tokio::spawn(conn);
+
+                Ok(SendRequest::Http2(sender))
+            } else {
+                let (sender, conn) = client::conn::http1::Builder::new()
+                    .preserve_header_case(true)
+                    .title_case_headers(true)
+                    .handshake(TokioIo::new(tls))
+                    .await
+                    .map_err(|err| Error::ConnectError(uri.clone(), err))?;
+
+                tokio::spawn(conn.with_upgrades());
+
+                Ok(SendRequest::Http1(sender))
+            }
+        } else {
+            let (sender, conn) = client::conn::http1::Builder::new()
+                .preserve_header_case(true)
+                .title_case_headers(true)
+                .handshake(TokioIo::new(tcp))
+                .await
+                .map_err(|err| Error::ConnectError(uri.clone(), err))?;
+            tokio::spawn(conn.with_upgrades());
+            Ok(SendRequest::Http1(sender))
+        }
+    }
+}
+
 /*
 /// Communication between client and server.
 ///
@@ -476,6 +600,7 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
         }
     }
 }
+    */
 
 enum SendRequest<B> {
     Http1(hyper::client::conn::http1::SendRequest<B>),
@@ -615,10 +740,9 @@ async fn upgrade<
 >(
     client: S1,
     server: S2,
-) -> (UnboundedReceiver<Vec<u8>>, UnboundedReceiver<Vec<u8>>) {
-    let (tx_client, rx_client) = futures::channel::mpsc::unbounded();
-    let (tx_server, rx_server) = futures::channel::mpsc::unbounded();
-
+    tx_client: UnboundedSender<Vec<u8>>,
+    tx_server: UnboundedSender<Vec<u8>>,
+) {
     let (mut client_read, mut client_write) = tokio::io::split(client);
     let (mut server_read, mut server_write) = tokio::io::split(server);
 
@@ -646,10 +770,9 @@ async fn upgrade<
         }
         Ok::<(), std::io::Error>(())
     });
-
-    (rx_client, rx_server)
 }
 
+/*
 fn dup_request<B>(req: Request<B>) -> (Request<B>, hyper::http::request::Parts)
 where
     B: Body<Data = Bytes> + 'static,
