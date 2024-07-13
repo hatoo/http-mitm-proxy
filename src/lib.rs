@@ -14,7 +14,12 @@ use hyper::{
     Method, Request, Response, StatusCode, Uri,
 };
 use hyper_util::rt::{TokioExecutor, TokioIo};
-use std::{borrow::Borrow, future::Future, sync::Arc};
+use std::{
+    borrow::Borrow,
+    future::Future,
+    sync::Arc,
+    task::{Context, Poll},
+};
 use tls::server_config;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -231,7 +236,7 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
                         }
                     };
 
-                    let send_request_connect = Arc::new(Mutex::new(send_request_connect));
+                    let send_request_connect = Arc::new(Mutex::new(send_request_connect.ok()));
 
                     let f = move |mut req: Request<_>| {
                         let tx = tx.clone();
@@ -254,17 +259,38 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
 
                             let (req, req_parts) = dup_request(req);
 
-                            let response = if let Ok(send_request_connect) =
+                            let response = if let Some(send_request_connect) =
                                 send_request_connect.lock().await.as_mut()
                             {
                                 if uri.authority() == Some(&connect_authority) {
+                                    // Check if connection isn't closed by server yet.
+                                    if futures::future::poll_fn(|ctx| {
+                                        send_request_connect.poll_ready(ctx)
+                                    })
+                                    .await
+                                    .is_err()
+                                    {
+                                        let sender = proxy
+                                            .connect(req.uri())
+                                            .await
+                                            .expect(&format!("connect uri: {}", req.uri()));
+
+                                        *send_request_connect = sender;
+                                    }
+
                                     send_request_connect.send_request(req).await
                                 } else {
-                                    let mut sender = proxy.connect(req.uri()).await.expect(&format!("connect uri: {}", req.uri()));
+                                    let mut sender = proxy
+                                        .connect(req.uri())
+                                        .await
+                                        .expect(&format!("connect uri: {}", req.uri()));
                                     sender.send_request(req).await
                                 }
                             } else {
-                                let mut sender = proxy.connect(req.uri()).await.expect(&format!("connect uri: {}", req.uri()));
+                                let mut sender = proxy
+                                    .connect(req.uri())
+                                    .await
+                                    .expect(&format!("connect uri: {}", req.uri()));
                                 sender.send_request(req).await
                             };
 
@@ -342,7 +368,10 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
             ))
         } else {
             let uri = req.uri().clone();
-            let mut sender = proxy.connect(req.uri()).await.expect(&format!("connect uri: {}", req.uri()));
+            let mut sender = proxy
+                .connect(req.uri())
+                .await
+                .expect(&format!("connect uri: {}", req.uri()));
 
             let (req, req_parts) = dup_request(req);
             let (status, res, res_upgrade) = match sender.send_request(req).await {
@@ -416,6 +445,15 @@ where
                 }
                 sender.send_request(req).await
             }
+        }
+    }
+}
+
+impl<B> SendRequest<B> {
+    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), hyper::Error>> {
+        match self {
+            SendRequest::Http1(sender) => sender.poll_ready(cx),
+            SendRequest::Http2(sender) => sender.poll_ready(cx),
         }
     }
 }
