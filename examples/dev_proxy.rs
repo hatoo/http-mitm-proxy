@@ -1,9 +1,11 @@
 use std::path::PathBuf;
 
 use axum::{routing::get, Router};
+use bytes::Bytes;
 use clap::{Args, Parser};
 use futures::StreamExt;
-use http_mitm_proxy::MitmProxy;
+use http_body_util::Empty;
+use http_mitm_proxy::{MitmProxy, RequestBack};
 
 #[derive(Parser)]
 struct Opt {
@@ -125,7 +127,9 @@ async fn main() {
 
         let uri = req.uri().clone();
 
-        let _ = comm.request_back.send(req);
+        let _ = comm
+            .request_back
+            .send(RequestBack::Request::<_, Empty<Bytes>>(req));
         if let Ok(Ok(mut response)) = comm.response.await {
             tokio::spawn(async move {
                 let mut len = 0;

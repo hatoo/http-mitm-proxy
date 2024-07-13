@@ -13,9 +13,11 @@ A HTTP proxy server library intended to be a backend of application like Burp pr
 ```rust, no_run
 use std::path::PathBuf;
 
+use bytes::Bytes;
 use clap::{Args, Parser};
 use futures::StreamExt;
-use http_mitm_proxy::MitmProxy;
+use http_body_util::Empty;
+use http_mitm_proxy::{MitmProxy, RequestBack};
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
@@ -113,7 +115,9 @@ async fn main() {
     while let Some(comm) = communications.next().await {
         let uri = comm.request.uri().clone();
         // modify the request here if you want
-        let _ = comm.request_back.send(comm.request);
+        let _ = comm
+            .request_back
+            .send(RequestBack::Request::<_, Empty<Bytes>>(comm.request));
 
         tokio::spawn(async move {
             if let Ok(Ok(mut response)) = comm.response.await {
