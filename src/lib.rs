@@ -84,11 +84,16 @@ pub struct Upgrade {
     pub server_to_client: UnboundedReceiver<Vec<u8>>,
 }
 
+pub enum RequestBack<B1, B2> {
+    Request(Request<B1>),
+    Direct(Response<B2>),
+}
+
 /// Communication between client and server.
 ///
 /// Note: http-mitm-proxy observe by Communication basis, not Connection basis. Some Communications may belong to the same connection using keep-alive.
 #[allow(clippy::type_complexity)]
-pub struct Communication<B> {
+pub struct Communication<B1, B2> {
     /// Client address
     pub client_addr: std::net::SocketAddr,
     /// Request from client. request.uri() is an absolute URI except for `CONNECT` method.
@@ -96,7 +101,7 @@ pub struct Communication<B> {
     pub request: Request<Incoming>,
     /// Send request back to server. You can modify request before sending it back.
     /// NOTE: If you drop this without send(), communication will be canceled and server will not receive request and client will get 500 Internal Server Error.
-    pub request_back: futures::channel::oneshot::Sender<Request<B>>,
+    pub request_back: futures::channel::oneshot::Sender<RequestBack<B1, B2>>,
     /// Response from server. Be sent error if fails to get response from server.
     pub response: futures::channel::oneshot::Receiver<
         Result<Response<UnboundedReceiver<Result<Frame<Bytes>, Arc<hyper::Error>>>>, hyper::Error>,
@@ -109,19 +114,21 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
     /// Bind proxy server to address.
     /// You can observe communications between client and server by receiving stream.
     /// To run proxy server, you need to run returned future. This API design give you an ability to cancel proxy server when you want.
-    pub async fn bind<A: ToSocketAddrs, B>(
+    pub async fn bind<A: ToSocketAddrs, B1, B2>(
         self,
         addr: A,
     ) -> Result<
         (
-            impl Stream<Item = Communication<B>>,
+            impl Stream<Item = Communication<B1, B2>>,
             impl Future<Output = ()>,
         ),
         std::io::Error,
     >
     where
-        B: Body<Data = Bytes> + Send + Unpin + 'static,
-        B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+        B1: Body<Data = Bytes> + Send + Unpin + 'static,
+        B1::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+        B2: Body<Data = Bytes> + Send + Sync + Unpin + 'static,
+        B2::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
     {
         let listener = TcpListener::bind(addr).await?;
         let (tx, rx) = futures::channel::mpsc::unbounded();
@@ -153,14 +160,16 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
         Ok((rx, serve))
     }
 
-    async fn handle<B>(
+    async fn handle<B1, B2>(
         proxy: Arc<MitmProxyImpl<C>>,
         stream: tokio::net::TcpStream,
-        tx: UnboundedSender<Communication<B>>,
+        tx: UnboundedSender<Communication<B1, B2>>,
         client_addr: std::net::SocketAddr,
     ) where
-        B: Body<Data = Bytes> + Unpin + Send + 'static,
-        B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+        B1: Body<Data = Bytes> + Unpin + Send + 'static,
+        B1::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+        B2: Body<Data = Bytes> + Unpin + Send + Sync + 'static,
+        B2::Error: Into<Box<(dyn std::error::Error + std::marker::Send + Sync)>>,
     {
         if let Err(err) = server::conn::http1::Builder::new()
             .preserve_header_case(true)
@@ -176,21 +185,29 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
         }
     }
 
-    async fn proxy<B>(
+    async fn proxy<B1, B2>(
         proxy: Arc<MitmProxyImpl<C>>,
         req: Request<hyper::body::Incoming>,
-        tx: UnboundedSender<Communication<B>>,
+        tx: UnboundedSender<Communication<B1, B2>>,
         client_addr: std::net::SocketAddr,
-    ) -> Result<Response<BoxBody<Bytes, Arc<hyper::Error>>>, Error>
+    ) -> Result<Response<BoxBody<Bytes, Box<dyn std::error::Error + Send + Sync>>>, Error>
     where
-        B: Body<Data = Bytes> + Unpin + Send + 'static,
-        B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+        B1: Body<Data = Bytes> + Unpin + Send + 'static,
+        B1::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+        B2: Body<Data = Bytes> + Unpin + Send + Sync + 'static,
+        B2::Error: Into<Box<(dyn std::error::Error + Send + Sync + 'static)>>,
     {
         let original_uri = req.uri().clone();
 
-        let (Some(req), res_tx, upgrade_tx) = send_and_receive_request(&tx, client_addr, req).await
+        let (Some(rback), res_tx, upgrade_tx) =
+            send_and_receive_request_back(&tx, client_addr, req).await
         else {
             return Ok(no_body(StatusCode::INTERNAL_SERVER_ERROR));
+        };
+
+        let req = match rback {
+            RequestBack::Request(req) => req,
+            RequestBack::Direct(res) => return Ok(res.map(|b| b.map_err(|err| err.into()).boxed())),
         };
 
         if req.method() == Method::CONNECT {
@@ -264,10 +281,17 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
                         async move {
                             inject_authority(&mut req, connect_authority.clone());
 
-                            let (Some(req), res_tx, upgrade_tx) =
-                                send_and_receive_request(&tx, client_addr, req).await
+                            let (Some(rback), res_tx, upgrade_tx) =
+                                send_and_receive_request_back(&tx, client_addr, req).await
                             else {
                                 return Ok::<_, Error>(no_body(StatusCode::INTERNAL_SERVER_ERROR));
+                            };
+
+                            let req = match rback {
+                                RequestBack::Request(req) => req,
+                                RequestBack::Direct(res) => {
+                                    return Ok(res.map(|b| b.map_err(|err| err.into()).boxed()))
+                                }
                             };
 
                             let uri = req.uri().clone();
@@ -529,7 +553,9 @@ impl<C> MitmProxyImpl<C> {
     }
 }
 
-fn no_body(status: StatusCode) -> Response<BoxBody<Bytes, Arc<hyper::Error>>> {
+fn no_body(
+    status: StatusCode,
+) -> Response<BoxBody<Bytes, Box<dyn std::error::Error + Send + Sync>>> {
     let mut res = Response::new(Empty::new().map_err(|never| match never {}).boxed());
     *res.status_mut() = status;
     res
@@ -606,7 +632,7 @@ where
 fn dup_response(
     res: Response<hyper::body::Incoming>,
 ) -> (
-    Response<BoxBody<Bytes, Arc<hyper::Error>>>,
+    Response<BoxBody<Bytes, Box<dyn std::error::Error + Send + Sync>>>,
     Response<Empty<Bytes>>,
     Response<UnboundedReceiver<Result<Frame<Bytes>, Arc<hyper::Error>>>>,
 ) {
@@ -614,7 +640,12 @@ fn dup_response(
     let (body, rx) = dup_body(body);
 
     (
-        Response::from_parts(parts.clone(), StreamBody::new(body).boxed()),
+        Response::from_parts(
+            parts.clone(),
+            StreamBody::new(body)
+                .map_err(|err| Box::new(err) as Box<dyn std::error::Error + Send + Sync>)
+                .boxed(),
+        ),
         Response::from_parts(parts.clone(), Empty::new()),
         Response::from_parts(parts.clone(), rx),
     )
@@ -658,12 +689,12 @@ where
     (StreamBody::new(body), rx)
 }
 
-async fn send_and_receive_request<B>(
-    tx: &UnboundedSender<Communication<B>>,
+async fn send_and_receive_request_back<B1, B2>(
+    tx: &UnboundedSender<Communication<B1, B2>>,
     client_addr: std::net::SocketAddr,
     req: Request<Incoming>,
 ) -> (
-    Option<Request<B>>,
+    Option<RequestBack<B1, B2>>,
     futures::channel::oneshot::Sender<
         Result<Response<UnboundedReceiver<Result<Frame<Bytes>, Arc<hyper::Error>>>>, hyper::Error>,
     >,
@@ -681,9 +712,9 @@ async fn send_and_receive_request<B>(
         upgrade: upgrade_rx,
     });
 
-    if let Ok(req) = req_back_rx.await {
+    if let Ok(rback) = req_back_rx.await {
         tracing::info!("Request canceled");
-        (Some(req), res_tx, upgrade_tx)
+        (Some(rback), res_tx, upgrade_tx)
     } else {
         (None, res_tx, upgrade_tx)
     }
