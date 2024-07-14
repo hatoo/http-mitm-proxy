@@ -1,6 +1,15 @@
-use std::sync::{atomic::AtomicU16, Arc};
+use std::{
+    convert::Infallible,
+    sync::{atomic::AtomicU16, Arc},
+};
 
-use axum::{extract::Request, routing::get, Router};
+use axum::{
+    extract::Request,
+    response::{sse::Event, Sse},
+    routing::get,
+    Router,
+};
+use futures::stream;
 use http_mitm_proxy::{DefaultClient, MitmProxy};
 
 static PORT: AtomicU16 = AtomicU16::new(3666);
@@ -135,6 +144,45 @@ async fn test_modify_http() {
 
     assert_eq!(res.status(), 200);
     assert_eq!(res.text().await.unwrap(), "modified");
+}
+
+#[tokio::test]
+async fn test_sse_http() {
+    let app = Router::new().route(
+        "/sse",
+        get(|| async {
+            Sse::new(stream::iter(["1", "2", "3"].into_iter().map(|s| {
+                Ok::<Event, Infallible>(Event::default().event("message").data(s))
+            })))
+        }),
+    );
+
+    let (port, server) = bind_app(app).await;
+    tokio::spawn(server);
+
+    let proxy = MitmProxy::new(Some(root_cert()));
+    let proxy_port = get_port();
+    let proxy_client = proxy_client();
+    let proxy = proxy
+        .bind(("127.0.0.1", proxy_port), move |req| {
+            let proxy_client = proxy_client.clone();
+            async move { proxy_client.send_request(req).await.map(|t| t.0) }
+        })
+        .await
+        .unwrap();
+    tokio::spawn(proxy);
+
+    let client = client(proxy_port);
+    let res = client
+        .get(format!("http://127.0.0.1:{}/sse", port))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(
+        res.bytes().await.unwrap(),
+        b"event: message\ndata: 1\n\nevent: message\ndata: 2\n\nevent: message\ndata: 3\n\n"[..]
+    );
 }
 
 /*
