@@ -80,7 +80,7 @@ async fn main() {
             .unwrap(),
     ));
     let server = proxy
-        .bind(("127.0.0.1", 3003), move |req| {
+        .bind(("127.0.0.1", 3003), move |_client_addr, req| {
             let client = client.clone();
             async move {
                 let uri = req.uri().clone();

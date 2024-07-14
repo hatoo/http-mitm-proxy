@@ -1,9 +1,8 @@
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::Arc};
 
 use axum::{routing::get, Router};
 use clap::{Args, Parser};
-use futures::StreamExt;
-use http_mitm_proxy::MitmProxy;
+use http_mitm_proxy::{DefaultClient, MitmProxy};
 
 #[derive(Parser)]
 struct Opt {
@@ -74,16 +73,53 @@ async fn main() {
     let proxy = MitmProxy::new(
         // This is the root cert that will be used to sign the fake certificates
         Some(root_cert),
-        // This is the connector that will be used to connect to the upstream server from proxy
+    );
+
+    let client = Arc::new(DefaultClient::new(
         tokio_native_tls::native_tls::TlsConnector::builder()
             // You must set ALPN if you want to support HTTP/2
             .request_alpns(&["h2", "http/1.1"])
             .build()
             .unwrap(),
-    );
+    ));
+    let proxy = proxy
+        .bind(("127.0.0.1", 3003), move |_client_addr, mut req| {
+            let client = client.clone();
+            async move {
+                // Forward connection from http/https dev.example to http://127.0.0.1:3333
+                dbg!(req.uri());
+                if req.uri().host() == Some("dev.example") {
+                    dbg!("here");
+                    req.headers_mut().insert(
+                        hyper::header::HOST,
+                        hyper::header::HeaderValue::from_maybe_shared(format!(
+                            "127.0.0.1:{}",
+                            port
+                        ))
+                        .unwrap(),
+                    );
 
-    let (mut communications, server) = proxy.bind(("127.0.0.1", 3003)).await.unwrap();
-    tokio::spawn(server);
+                    let mut parts = req.uri().clone().into_parts();
+                    parts.scheme = Some(hyper::http::uri::Scheme::HTTP);
+                    parts.authority = Some(
+                        hyper::http::uri::Authority::from_maybe_shared(format!(
+                            "127.0.0.1:{}",
+                            port
+                        ))
+                        .unwrap(),
+                    );
+                    *req.uri_mut() = hyper::Uri::from_parts(parts).unwrap();
+
+                    dbg!(&req);
+                }
+
+                let (res, _upgrade) = client.send_request(req).await?;
+
+                Ok(res)
+            }
+        })
+        .await
+        .unwrap();
 
     println!("HTTP Proxy is listening on http://127.0.0.1:3003");
 
@@ -101,51 +137,5 @@ async fn main() {
     println!("Private key");
     println!("{}", root_cert_key);
 
-    while let Some(comm) = communications.next().await {
-        let mut req = comm.request;
-
-        let original_url = req.uri().clone();
-
-        // Forward connection from http/https dev.example to http://127.0.0.1:3333
-        if req.uri().host() == Some("dev.example") && req.method() != hyper::http::Method::CONNECT {
-            req.headers_mut().insert(
-                hyper::header::HOST,
-                hyper::header::HeaderValue::from_maybe_shared(format!("127.0.0.1:{}", port))
-                    .unwrap(),
-            );
-
-            let mut parts = req.uri().clone().into_parts();
-            parts.scheme = Some(hyper::http::uri::Scheme::HTTP);
-            parts.authority = Some(
-                hyper::http::uri::Authority::from_maybe_shared(format!("127.0.0.1:{}", port))
-                    .unwrap(),
-            );
-            *req.uri_mut() = hyper::Uri::from_parts(parts).unwrap();
-        }
-
-        let uri = req.uri().clone();
-
-        let _ = comm.request_back.send(req);
-        if let Ok(Ok(mut response)) = comm.response.await {
-            tokio::spawn(async move {
-                let mut len = 0;
-                let body = response.body_mut();
-                while let Some(frame) = body.next().await {
-                    if let Ok(frame) = frame {
-                        if let Some(data) = frame.data_ref() {
-                            len += data.len();
-                        }
-                    }
-                }
-                println!(
-                    "{}\t{} -> {}\t{}\t{}",
-                    comm.client_addr,
-                    original_url,
-                    uri,
-                    response.status(),
-                    len
-                );
-            });
-        }
-    }
+    proxy.await;
 }

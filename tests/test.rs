@@ -79,7 +79,7 @@ async fn test_simple_http() {
 
     let proxy_client = proxy_client();
     let proxy = proxy
-        .bind(("127.0.0.1", proxy_port), move |req| {
+        .bind(("127.0.0.1", proxy_port), move |_, req| {
             let proxy_client = proxy_client.clone();
             async move { proxy_client.send_request(req).await.map(|t| t.0) }
         })
@@ -121,7 +121,7 @@ async fn test_modify_http() {
 
     let proxy_client = proxy_client();
     let proxy = proxy
-        .bind(("127.0.0.1", proxy_port), move |mut req| {
+        .bind(("127.0.0.1", proxy_port), move |_, mut req| {
             let proxy_client = proxy_client.clone();
             async move {
                 req.headers_mut()
@@ -164,7 +164,7 @@ async fn test_sse_http() {
     let proxy_port = get_port();
     let proxy_client = proxy_client();
     let proxy = proxy
-        .bind(("127.0.0.1", proxy_port), move |req| {
+        .bind(("127.0.0.1", proxy_port), move |_, req| {
             let proxy_client = proxy_client.clone();
             async move { proxy_client.send_request(req).await.map(|t| t.0) }
         })
