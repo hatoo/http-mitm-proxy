@@ -1,4 +1,4 @@
-use std::{path::PathBuf, sync::Arc};
+use std::path::PathBuf;
 
 use axum::{routing::get, Router};
 use clap::{Args, Parser};
@@ -75,21 +75,19 @@ async fn main() {
         Some(root_cert),
     );
 
-    let client = Arc::new(DefaultClient::new(
+    let client = DefaultClient::new(
         tokio_native_tls::native_tls::TlsConnector::builder()
             // You must set ALPN if you want to support HTTP/2
             .request_alpns(&["h2", "http/1.1"])
             .build()
             .unwrap(),
-    ));
+    );
     let proxy = proxy
         .bind(("127.0.0.1", 3003), move |_client_addr, mut req| {
             let client = client.clone();
             async move {
                 // Forward connection from http/https dev.example to http://127.0.0.1:3333
-                dbg!(req.uri());
                 if req.uri().host() == Some("dev.example") {
-                    dbg!("here");
                     req.headers_mut().insert(
                         hyper::header::HOST,
                         hyper::header::HeaderValue::from_maybe_shared(format!(
@@ -109,8 +107,6 @@ async fn main() {
                         .unwrap(),
                     );
                     *req.uri_mut() = hyper::Uri::from_parts(parts).unwrap();
-
-                    dbg!(&req);
                 }
 
                 let (res, _upgrade) = client.send_request(req).await?;
