@@ -11,11 +11,10 @@ A HTTP proxy server library intended to be a backend of application like Burp pr
 ## Usage
 
 ```rust, no_run
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::Arc};
 
 use clap::{Args, Parser};
-use futures::StreamExt;
-use http_mitm_proxy::MitmProxy;
+use http_mitm_proxy::{DefaultClient, MitmProxy};
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
@@ -83,16 +82,35 @@ async fn main() {
     let proxy = MitmProxy::new(
         // This is the root cert that will be used to sign the fake certificates
         Some(root_cert),
-        // This is the connector that will be used to connect to the upstream server from proxy
+    );
+
+    let client = Arc::new(DefaultClient::new(
         tokio_native_tls::native_tls::TlsConnector::builder()
             // You must set ALPN if you want to support HTTP/2
             .request_alpns(&["h2", "http/1.1"])
             .build()
             .unwrap(),
-    );
+    ));
+    let server = proxy
+        .bind(("127.0.0.1", 3003), move |_client_addr, req| {
+            let client = client.clone();
+            async move {
+                let uri = req.uri().clone();
 
-    let (mut communications, server) = proxy.bind(("127.0.0.1", 3003)).await.unwrap();
-    tokio::spawn(server);
+                // You can modify request here
+                // or You can just return response anyware
+
+                let (res, _upgrade) = client.send_request(req).await?;
+
+                println!("{} -> {}", uri, res.status());
+
+                // You can modify response here
+
+                Ok(res)
+            }
+        })
+        .await
+        .unwrap();
 
     println!("HTTP Proxy is listening on http://127.0.0.1:3003");
 
@@ -110,31 +128,6 @@ async fn main() {
     println!("Private key");
     println!("{}", root_cert_key);
 
-    while let Some(comm) = communications.next().await {
-        let uri = comm.request.uri().clone();
-        // modify the request here if you want
-        let _ = comm.request_back.send(comm.request);
-
-        tokio::spawn(async move {
-            if let Ok(Ok(mut response)) = comm.response.await {
-                let mut len = 0;
-                let body = response.body_mut();
-                while let Some(frame) = body.next().await {
-                    if let Ok(frame) = frame {
-                        if let Some(data) = frame.data_ref() {
-                            len += data.len();
-                        }
-                    }
-                }
-                println!(
-                    "{}\t{}\t{}\t{}",
-                    comm.client_addr,
-                    uri,
-                    response.status(),
-                    len
-                );
-            }
-        });
-    }
+    server.await;
 }
 ```
