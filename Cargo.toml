@@ -26,7 +26,6 @@ hyper = { version = "1.0.1", features = ["http1", "http2", "server", "client"] }
 futures = "0.3.29"
 bytes = "1.5.0"
 http-body-util = "0.1.0"
-pin-project-lite = "0.2.13"
 rcgen = "0.13.1"
 rustls = "0.23.3"
 tokio-rustls = "0.26.0"
@@ -34,7 +33,6 @@ tokio-native-tls = "0.3.1"
 tracing = "0.1.40"
 hyper-util = { version = "0.1.1", features = ["tokio"] }
 native-tls = { version = "0.2.12", features = ["alpn"] }
-tracing-test = "0.2.5"
 thiserror = "1.0.62"
 
 [dev-dependencies]
