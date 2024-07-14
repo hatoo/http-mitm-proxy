@@ -378,6 +378,8 @@ where
 }
 
 impl<B> SendRequest<B> {
+    #[allow(dead_code)]
+    // TODO: connection pooling
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), hyper::Error>> {
         match self {
             SendRequest::Http1(sender) => sender.poll_ready(cx),

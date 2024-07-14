@@ -1,7 +1,6 @@
 use std::{path::PathBuf, sync::Arc};
 
 use clap::{Args, Parser};
-use futures::StreamExt;
 use http_mitm_proxy::{DefaultClient, MitmProxy};
 use tracing_subscriber::EnvFilter;
 
