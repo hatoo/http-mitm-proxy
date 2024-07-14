@@ -1,4 +1,4 @@
-use std::{path::PathBuf, sync::Arc};
+use std::path::PathBuf;
 
 use clap::{Args, Parser};
 use http_mitm_proxy::{DefaultClient, MitmProxy};
@@ -71,13 +71,13 @@ async fn main() {
         Some(root_cert),
     );
 
-    let client = Arc::new(DefaultClient::new(
+    let client = DefaultClient::new(
         tokio_native_tls::native_tls::TlsConnector::builder()
             // You must set ALPN if you want to support HTTP/2
             .request_alpns(&["h2", "http/1.1"])
             .build()
             .unwrap(),
-    ));
+    );
     let server = proxy
         .bind(("127.0.0.1", 3003), move |_client_addr, req| {
             let client = client.clone();

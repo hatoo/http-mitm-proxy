@@ -35,6 +35,7 @@ pub struct Upgrade {
     /// Server to client traffic
     pub server_to_client: UnboundedReceiver<Vec<u8>>,
 }
+#[derive(Clone)]
 pub struct DefaultClient(tokio_native_tls::TlsConnector);
 impl DefaultClient {
     pub fn new(tls_connector: native_tls::TlsConnector) -> Self {
