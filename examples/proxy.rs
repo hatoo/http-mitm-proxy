@@ -93,7 +93,7 @@ async fn main() {
 
                 // You can modify response here
 
-                Ok(res)
+                Ok::<_, http_mitm_proxy::default_client::Error>(res)
             }
         })
         .await

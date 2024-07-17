@@ -40,7 +40,7 @@ impl<C> MitmProxy<C> {
 // pub type Handler<B, E> = Fn(Request<Incoming>) -> Result<Response<B>, E>;
 
 impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
-    pub async fn bind<A: ToSocketAddrs, S, B, E, F>(
+    pub async fn bind<A: ToSocketAddrs, S, B, E, E2, F>(
         self,
         addr: A,
         service: S,
@@ -48,8 +48,9 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
     where
         B: Body<Data = Bytes, Error = E> + Send + Sync + 'static,
         E: std::error::Error + Send + Sync + 'static,
+        E2: std::error::Error + Send + Sync + 'static,
         S: Fn(SocketAddr, Request<Incoming>) -> F + Send + Sync + Clone + 'static,
-        F: Future<Output = Result<Response<B>, E>> + Send,
+        F: Future<Output = Result<Response<B>, E2>> + Send,
     {
         let listener = TcpListener::bind(addr).await?;
 
@@ -84,17 +85,18 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
         })
     }
 
-    async fn proxy<S, B, E, F>(
+    async fn proxy<S, B, E, E2, F>(
         proxy: Arc<MitmProxy<C>>,
         client_addr: SocketAddr,
         req: Request<Incoming>,
         service: S,
-    ) -> Result<Response<BoxBody<Bytes, E>>, E>
+    ) -> Result<Response<BoxBody<Bytes, E>>, E2>
     where
         S: Fn(SocketAddr, Request<Incoming>) -> F + Send + Clone + 'static,
-        F: Future<Output = Result<Response<B>, E>> + Send,
+        F: Future<Output = Result<Response<B>, E2>> + Send,
         B: Body<Data = Bytes, Error = E> + Send + Sync + 'static,
         E: std::error::Error + Send + Sync + 'static,
+        E2: std::error::Error + Send + Sync + 'static,
     {
         if req.method() == Method::CONNECT {
             // https

@@ -45,14 +45,13 @@ impl DefaultClient {
     pub async fn send_request<B>(
         &self,
         req: Request<B>,
-    ) -> Result<(Response<Incoming>, Option<Upgrade>), hyper::Error>
+    ) -> Result<(Response<Incoming>, Option<Upgrade>), Error>
     where
         B: Body + Unpin + Send + 'static,
         B::Data: Send,
         B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
     {
-        // TODO
-        let mut send_request = self.connect(req.uri()).await.unwrap();
+        let mut send_request = self.connect(req.uri()).await?;
 
         let (req_parts, req_body) = req.into_parts();
 
