@@ -80,12 +80,13 @@ fn proxy_client() -> DefaultClient {
     )
 }
 
-async fn setup<B, E, S, F>(app: Router, service: S) -> (u16, u16)
+async fn setup<B, E, E2, S, F>(app: Router, service: S) -> (u16, u16)
 where
     B: Body<Data = Bytes, Error = E> + Send + Sync + 'static,
     E: std::error::Error + Send + Sync + 'static,
+    E2: std::error::Error + Send + Sync + 'static,
     S: Fn(SocketAddr, Request<Incoming>) -> F + Send + Sync + Clone + 'static,
-    F: std::future::Future<Output = Result<Response<B>, E>> + Send + 'static,
+    F: std::future::Future<Output = Result<Response<B>, E2>> + Send + 'static,
 {
     let proxy = MitmProxy::new(Some(root_cert()));
     let proxy_port = get_port();
@@ -101,7 +102,7 @@ where
     (proxy_port, port)
 }
 
-async fn setup_tls<B, E, S, F>(
+async fn setup_tls<B, E, E2, S, F>(
     app: Router,
     service: S,
     root_cert: Arc<rcgen::CertifiedKey>,
@@ -109,8 +110,9 @@ async fn setup_tls<B, E, S, F>(
 where
     B: Body<Data = Bytes, Error = E> + Send + Sync + 'static,
     E: std::error::Error + Send + Sync + 'static,
+    E2: std::error::Error + Send + Sync + 'static,
     S: Fn(SocketAddr, Request<Incoming>) -> F + Send + Sync + Clone + 'static,
-    F: std::future::Future<Output = Result<Response<B>, E>> + Send + 'static,
+    F: std::future::Future<Output = Result<Response<B>, E2>> + Send + 'static,
 {
     let proxy = MitmProxy::new(Some(root_cert));
     let proxy_port = get_port();

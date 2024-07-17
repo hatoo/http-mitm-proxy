@@ -111,7 +111,7 @@ async fn main() {
 
                 let (res, _upgrade) = client.send_request(req).await?;
 
-                Ok(res)
+                Ok::<_, http_mitm_proxy::default_client::Error>(res)
             }
         })
         .await
