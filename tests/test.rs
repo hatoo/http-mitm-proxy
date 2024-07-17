@@ -1,4 +1,8 @@
-use std::{convert::Infallible, net::SocketAddr, sync::atomic::AtomicU16};
+use std::{
+    convert::Infallible,
+    net::SocketAddr,
+    sync::{atomic::AtomicU16, Arc},
+};
 
 use axum::{
     extract::Request,
@@ -11,7 +15,7 @@ use futures::stream;
 use http_mitm_proxy::{DefaultClient, MitmProxy};
 use hyper::{
     body::{Body, Incoming},
-    Response,
+    Response, Uri,
 };
 
 static PORT: AtomicU16 = AtomicU16::new(3666);
@@ -54,7 +58,15 @@ fn client(proxy_port: u16) -> reqwest::Client {
     reqwest::Client::builder()
         .proxy(reqwest::Proxy::http(format!("http://127.0.0.1:{}", proxy_port)).unwrap())
         .proxy(reqwest::Proxy::https(format!("http://127.0.0.1:{}", proxy_port)).unwrap())
-        .danger_accept_invalid_certs(true)
+        .build()
+        .unwrap()
+}
+
+fn client_tls(proxy_port: u16, cert: &rcgen::CertifiedKey) -> reqwest::Client {
+    reqwest::Client::builder()
+        .proxy(reqwest::Proxy::http(format!("http://127.0.0.1:{}", proxy_port)).unwrap())
+        .proxy(reqwest::Proxy::https(format!("http://127.0.0.1:{}", proxy_port)).unwrap())
+        .add_root_certificate(reqwest::Certificate::from_der(cert.cert.der()).unwrap())
         .build()
         .unwrap()
 }
@@ -76,6 +88,31 @@ where
     F: std::future::Future<Output = Result<Response<B>, E>> + Send + 'static,
 {
     let proxy = MitmProxy::new(Some(root_cert()));
+    let proxy_port = get_port();
+    let proxy = proxy
+        .bind(("127.0.0.1", proxy_port), service)
+        .await
+        .unwrap();
+    tokio::spawn(proxy);
+
+    let (port, server) = bind_app(app).await;
+    tokio::spawn(server);
+
+    (proxy_port, port)
+}
+
+async fn setup_tls<B, E, S, F>(
+    app: Router,
+    service: S,
+    root_cert: Arc<rcgen::CertifiedKey>,
+) -> (u16, u16)
+where
+    B: Body<Data = Bytes, Error = E> + Send + Sync + 'static,
+    E: std::error::Error + Send + Sync + 'static,
+    S: Fn(SocketAddr, Request<Incoming>) -> F + Send + Sync + Clone + 'static,
+    F: std::future::Future<Output = Result<Response<B>, E>> + Send + 'static,
+{
+    let proxy = MitmProxy::new(Some(root_cert));
     let proxy_port = get_port();
     let proxy = proxy
         .bind(("127.0.0.1", proxy_port), service)
@@ -178,4 +215,41 @@ async fn test_sse_http() {
         res.bytes().await.unwrap(),
         b"event: message\ndata: 1\n\nevent: message\ndata: 2\n\nevent: message\ndata: 3\n\n"[..]
     );
+}
+
+#[tokio::test]
+async fn test_simple_https() {
+    const BODY: &str = "Hello, World!";
+    let app = Router::new().route("/", get(|| async move { BODY }));
+
+    let cert = Arc::new(root_cert());
+
+    let proxy_client = proxy_client();
+    let (proxy_port, port) = setup_tls(
+        app,
+        move |_, mut req| {
+            let proxy_client = proxy_client.clone();
+            async move {
+                let mut parts = req.uri().clone().into_parts();
+                parts.scheme = Some(hyper::http::uri::Scheme::HTTP);
+
+                *req.uri_mut() = Uri::from_parts(parts).unwrap();
+
+                proxy_client.send_request(req).await.map(|t| t.0)
+            }
+        },
+        cert.clone(),
+    )
+    .await;
+
+    let client = client_tls(proxy_port, &cert);
+
+    let res = client
+        .get(format!("https://127.0.0.1:{}/", port))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(res.status(), 200);
+    assert_eq!(res.text().await.unwrap(), BODY);
 }
