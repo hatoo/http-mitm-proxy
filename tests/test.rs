@@ -1,7 +1,4 @@
-use std::{
-    convert::Infallible,
-    sync::{atomic::AtomicU16, Arc},
-};
+use std::{convert::Infallible, net::SocketAddr, sync::atomic::AtomicU16};
 
 use axum::{
     extract::Request,
@@ -9,8 +6,13 @@ use axum::{
     routing::get,
     Router,
 };
+use bytes::Bytes;
 use futures::stream;
 use http_mitm_proxy::{DefaultClient, MitmProxy};
+use hyper::{
+    body::{Body, Incoming},
+    Response,
+};
 
 static PORT: AtomicU16 = AtomicU16::new(3666);
 
@@ -57,36 +59,47 @@ fn client(proxy_port: u16) -> reqwest::Client {
         .unwrap()
 }
 
-fn proxy_client() -> Arc<DefaultClient> {
-    Arc::new(DefaultClient::new(
+fn proxy_client() -> DefaultClient {
+    DefaultClient::new(
         tokio_native_tls::native_tls::TlsConnector::builder()
             .request_alpns(&["h2", "http/1.1"])
             .build()
             .unwrap(),
-    ))
+    )
 }
 
-#[tokio::test]
-async fn test_simple_http() {
+async fn setup<B, E, S, F>(app: Router, service: S) -> (u16, u16)
+where
+    B: Body<Data = Bytes, Error = E> + Send + Sync + 'static,
+    E: std::error::Error + Send + Sync + 'static,
+    S: Fn(SocketAddr, Request<Incoming>) -> F + Send + Sync + Clone + 'static,
+    F: std::future::Future<Output = Result<Response<B>, E>> + Send + 'static,
+{
     let proxy = MitmProxy::new(Some(root_cert()));
     let proxy_port = get_port();
-
-    const BODY: &str = "Hello, World!";
-    let app = Router::new().route("/", get(|| async move { BODY }));
+    let proxy = proxy
+        .bind(("127.0.0.1", proxy_port), service)
+        .await
+        .unwrap();
+    tokio::spawn(proxy);
 
     let (port, server) = bind_app(app).await;
     tokio::spawn(server);
 
-    let proxy_client = proxy_client();
-    let proxy = proxy
-        .bind(("127.0.0.1", proxy_port), move |_, req| {
-            let proxy_client = proxy_client.clone();
-            async move { proxy_client.send_request(req).await.map(|t| t.0) }
-        })
-        .await
-        .unwrap();
+    (proxy_port, port)
+}
 
-    tokio::spawn(proxy);
+#[tokio::test]
+async fn test_simple_http() {
+    const BODY: &str = "Hello, World!";
+    let app = Router::new().route("/", get(|| async move { BODY }));
+
+    let proxy_client = proxy_client();
+    let (proxy_port, port) = setup(app, move |_, req| {
+        let proxy_client = proxy_client.clone();
+        async move { proxy_client.send_request(req).await.map(|t| t.0) }
+    })
+    .await;
 
     let client = client(proxy_port);
 
@@ -102,9 +115,6 @@ async fn test_simple_http() {
 
 #[tokio::test]
 async fn test_modify_http() {
-    let proxy = MitmProxy::new(Some(root_cert()));
-    let proxy_port = get_port();
-
     let app = Router::new().route(
         "/",
         get(|req: Request| async move {
@@ -116,23 +126,16 @@ async fn test_modify_http() {
         }),
     );
 
-    let (port, server) = bind_app(app).await;
-    tokio::spawn(server);
-
     let proxy_client = proxy_client();
-    let proxy = proxy
-        .bind(("127.0.0.1", proxy_port), move |_, mut req| {
-            let proxy_client = proxy_client.clone();
-            async move {
-                req.headers_mut()
-                    .insert("X-test", "modified".parse().unwrap());
-                proxy_client.send_request(req).await.map(|t| t.0)
-            }
-        })
-        .await
-        .unwrap();
-
-    tokio::spawn(proxy);
+    let (proxy_port, port) = setup(app, move |_, mut req| {
+        let proxy_client = proxy_client.clone();
+        async move {
+            req.headers_mut()
+                .insert("X-test", "modified".parse().unwrap());
+            proxy_client.send_request(req).await.map(|t| t.0)
+        }
+    })
+    .await;
 
     let client = client(proxy_port);
 
@@ -157,20 +160,12 @@ async fn test_sse_http() {
         }),
     );
 
-    let (port, server) = bind_app(app).await;
-    tokio::spawn(server);
-
-    let proxy = MitmProxy::new(Some(root_cert()));
-    let proxy_port = get_port();
     let proxy_client = proxy_client();
-    let proxy = proxy
-        .bind(("127.0.0.1", proxy_port), move |_, req| {
-            let proxy_client = proxy_client.clone();
-            async move { proxy_client.send_request(req).await.map(|t| t.0) }
-        })
-        .await
-        .unwrap();
-    tokio::spawn(proxy);
+    let (proxy_port, port) = setup(app, move |_, req| {
+        let proxy_client = proxy_client.clone();
+        async move { proxy_client.send_request(req).await.map(|t| t.0) }
+    })
+    .await;
 
     let client = client(proxy_port);
     let res = client
