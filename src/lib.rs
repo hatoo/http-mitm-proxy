@@ -32,6 +32,7 @@ pub struct MitmProxy<C> {
 }
 
 impl<C> MitmProxy<C> {
+    /// Create a new MitmProxy
     pub fn new(root_cert: Option<C>) -> Self {
         Self { root_cert }
     }
@@ -40,6 +41,8 @@ impl<C> MitmProxy<C> {
 // pub type Handler<B, E> = Fn(Request<Incoming>) -> Result<Response<B>, E>;
 
 impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
+    /// Bind to a socket address and return a future that runs the proxy server.
+    /// URL for requests that passed to service are full URL including scheme.
     pub async fn bind<A: ToSocketAddrs, S, B, E, E2, F>(
         self,
         addr: A,

@@ -36,12 +36,15 @@ pub struct Upgrade {
     pub server_to_client: UnboundedReceiver<Vec<u8>>,
 }
 #[derive(Clone)]
+/// Default HTTP client for this crate
 pub struct DefaultClient(tokio_native_tls::TlsConnector);
 impl DefaultClient {
     pub fn new(tls_connector: native_tls::TlsConnector) -> Self {
         Self(tls_connector.into())
     }
 
+    /// Send a request and return a response.
+    /// Request should have a full URL including scheme.
     pub async fn send_request<B>(
         &self,
         req: Request<B>,
