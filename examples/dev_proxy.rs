@@ -1,8 +1,11 @@
 use std::path::PathBuf;
 
 use axum::{routing::get, Router};
+use bytes::Bytes;
 use clap::{Args, Parser};
+use http_body_util::{BodyExt, Full};
 use http_mitm_proxy::{DefaultClient, MitmProxy};
+use hyper::Response;
 
 #[derive(Parser)]
 struct Opt {
@@ -88,6 +91,19 @@ async fn main() {
             async move {
                 // Forward connection from http/https dev.example to http://127.0.0.1:3333
                 if req.uri().host() == Some("dev.example") {
+                    // Return a response created by the proxy
+                    if req.uri().path() == "/test.json" {
+                        let res = Response::builder()
+                            .header(hyper::header::CONTENT_TYPE, "application/json")
+                            .body(
+                                Full::new(Bytes::from("{data: 123}"))
+                                    .map_err(|e| match e {})
+                                    .boxed(),
+                            )
+                            .unwrap();
+                        return Ok(res);
+                    }
+
                     req.headers_mut().insert(
                         hyper::header::HOST,
                         hyper::header::HeaderValue::from_maybe_shared(format!(
@@ -111,7 +127,7 @@ async fn main() {
 
                 let (res, _upgrade) = client.send_request(req).await?;
 
-                Ok::<_, http_mitm_proxy::default_client::Error>(res)
+                Ok::<_, http_mitm_proxy::default_client::Error>(res.map(|b| b.boxed()))
             }
         })
         .await
