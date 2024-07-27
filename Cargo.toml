@@ -1,6 +1,6 @@
 [package]
 name = "http-mitm-proxy"
-version = "0.7.1"
+version = "0.8.0"
 description = "A HTTP proxy server library intended to be a backend of application like Burp proxy."
 readme = "README.md"
 repository = "https://github.com/hatoo/http-mitm-proxy"
