@@ -3,7 +3,7 @@ use std::{borrow::BorrowMut, sync::LazyLock};
 use dashmap::{try_result::TryResult, DashMap};
 use rustls::ServerConfig;
 
-static SERVER_CONFIG_CACHE: LazyLock<DashMap<String, rustls::ServerConfig>> = LazyLock::new(|| DashMap::new());
+static SERVER_CONFIG_CACHE: LazyLock<DashMap<(String, Vec<u8>), rustls::ServerConfig>> = LazyLock::new(|| DashMap::new());
 
 pub fn server_config(
     host: String,
@@ -11,7 +11,7 @@ pub fn server_config(
     h2: bool,
 ) -> Result<rustls::ServerConfig, rustls::Error> {
 
-    if let TryResult::Present(config) = SERVER_CONFIG_CACHE.try_get(&host) {
+    if let TryResult::Present(config) = SERVER_CONFIG_CACHE.try_get(&(host.clone(), root_cert.key_pair.serialize_der())) {
         let mut config = config.clone();
         return Ok(maybe_h2_config(&mut config, h2).to_owned());
     }
@@ -43,7 +43,7 @@ pub fn server_config(
         );
 
     if let Ok(config) = &config {
-        SERVER_CONFIG_CACHE.insert(host, config.clone());
+        SERVER_CONFIG_CACHE.insert((host, root_cert.key_pair.serialize_der()), config.clone());
     }
 
     config.map(|mut config| maybe_h2_config(config.borrow_mut(), h2).to_owned())
