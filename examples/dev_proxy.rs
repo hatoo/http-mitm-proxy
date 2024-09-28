@@ -6,6 +6,7 @@ use clap::{Args, Parser};
 use http_body_util::{BodyExt, Full};
 use http_mitm_proxy::{DefaultClient, MitmProxy};
 use hyper::Response;
+use moka::sync::Cache;
 
 #[derive(Parser)]
 struct Opt {
@@ -76,6 +77,7 @@ async fn main() {
     let proxy = MitmProxy::new(
         // This is the root cert that will be used to sign the fake certificates
         Some(root_cert),
+        Some(Cache::new(128)),
     );
 
     let client = DefaultClient::new(
