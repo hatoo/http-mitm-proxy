@@ -17,6 +17,7 @@ use hyper::{
     body::{Body, Incoming},
     Response, Uri,
 };
+use moka::sync::Cache;
 
 static PORT: AtomicU16 = AtomicU16::new(3666);
 
@@ -88,7 +89,7 @@ where
     S: Fn(SocketAddr, Request<Incoming>) -> F + Send + Sync + Clone + 'static,
     F: std::future::Future<Output = Result<Response<B>, E2>> + Send + 'static,
 {
-    let proxy = MitmProxy::new(Some(root_cert()));
+    let proxy = MitmProxy::new(Some(root_cert()), Some(Cache::new(128)));
     let proxy_port = get_port();
     let proxy = proxy
         .bind(("127.0.0.1", proxy_port), service)
@@ -114,7 +115,7 @@ where
     S: Fn(SocketAddr, Request<Incoming>) -> F + Send + Sync + Clone + 'static,
     F: std::future::Future<Output = Result<Response<B>, E2>> + Send + 'static,
 {
-    let proxy = MitmProxy::new(Some(root_cert));
+    let proxy = MitmProxy::new(Some(root_cert), Some(Cache::new(128)));
     let proxy_port = get_port();
     let proxy = proxy
         .bind(("127.0.0.1", proxy_port), service)

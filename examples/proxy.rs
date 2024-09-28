@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use clap::{Args, Parser};
 use http_mitm_proxy::{DefaultClient, MitmProxy};
+use moka::sync::Cache;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
@@ -69,6 +70,7 @@ async fn main() {
     let proxy = MitmProxy::new(
         // This is the root cert that will be used to sign the fake certificates
         Some(root_cert),
+        Some(Cache::new(128)),
     );
 
     let client = DefaultClient::new(

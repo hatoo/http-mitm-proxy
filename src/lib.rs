@@ -9,12 +9,14 @@ use hyper::{
     Method, Request, Response, StatusCode,
 };
 use hyper_util::rt::{TokioExecutor, TokioIo};
+use moka::sync::Cache;
 use std::{borrow::Borrow, future::Future, net::SocketAddr, sync::Arc};
-use tls::server_config;
+use tls::{generate_cert, CertifiedKeyDer};
 use tokio::net::{TcpListener, TcpStream, ToSocketAddrs};
 
 pub use futures;
 pub use hyper;
+pub use moka;
 pub use tokio_native_tls;
 
 pub mod default_client;
@@ -29,12 +31,20 @@ pub struct MitmProxy<C> {
     ///
     /// If None, proxy will just tunnel HTTPS traffic and will not observe HTTPS traffic.
     pub root_cert: Option<C>,
+    /// Cache to store generated certificates. If None, cache will not be used.
+    /// If root_cert is None, cache will not be used.
+    ///
+    /// The key of cache is hostname.
+    pub cert_cache: Option<Cache<String, CertifiedKeyDer>>,
 }
 
 impl<C> MitmProxy<C> {
     /// Create a new MitmProxy
-    pub fn new(root_cert: Option<C>) -> Self {
-        Self { root_cert }
+    pub fn new(root_cert: Option<C>, cache: Option<Cache<String, CertifiedKeyDer>>) -> Self {
+        Self {
+            root_cert,
+            cert_cache: cache,
+        }
     }
 }
 
@@ -119,15 +129,20 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
                     );
                     return;
                 };
-                if let Some(root_cert) = proxy.root_cert.as_ref() {
-                    let Ok(server_config) =
-                        // Even if URL is modified by middleman, we should sign with original host name to communicate client.
-                        server_config(connect_authority.host().to_string(), root_cert.borrow(), true)
-                    else {
-                        tracing::error!("Failed to create server config for {}", connect_authority.host());
-                        return;
+                if let Some(server_config) =
+                    proxy.server_config(connect_authority.host().to_string(), true)
+                {
+                    let server_config = match server_config {
+                        Ok(server_config) => server_config,
+                        Err(err) => {
+                            tracing::error!(
+                                "Failed to create server config for {}, {}",
+                                connect_authority.host(),
+                                err
+                            );
+                            return;
+                        }
                     };
-                    // TODO: Cache server_config
                     let server_config = Arc::new(server_config);
                     let tls_acceptor = tokio_rustls::TlsAcceptor::from(server_config);
                     let client = match tls_acceptor.accept(TokioIo::new(client)).await {
@@ -187,6 +202,48 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
             service(client_addr, req)
                 .await
                 .map(|res| res.map(|b| b.boxed()))
+        }
+    }
+
+    fn get_certified_key(&self, host: String) -> Option<CertifiedKeyDer> {
+        if let Some(root_cert) = self.root_cert.as_ref() {
+            Some(if let Some(cache) = self.cert_cache.as_ref() {
+                cache.get_with(host.clone(), move || {
+                    generate_cert(host, root_cert.borrow())
+                })
+            } else {
+                generate_cert(host, root_cert.borrow())
+            })
+        } else {
+            None
+        }
+    }
+
+    fn server_config(
+        &self,
+        host: String,
+        h2: bool,
+    ) -> Option<Result<rustls::ServerConfig, rustls::Error>> {
+        if let Some(cert) = self.get_certified_key(host) {
+            let config = rustls::ServerConfig::builder()
+                .with_no_client_auth()
+                .with_single_cert(
+                    vec![rustls::pki_types::CertificateDer::from(cert.cert_der)],
+                    rustls::pki_types::PrivateKeyDer::Pkcs8(
+                        rustls::pki_types::PrivatePkcs8KeyDer::from(cert.key_der),
+                    ),
+                );
+
+            Some(if h2 {
+                config.map(|mut server_config| {
+                    server_config.alpn_protocols = vec!["h2".into(), "http/1.1".into()];
+                    server_config
+                })
+            } else {
+                config
+            })
+        } else {
+            None
         }
     }
 }
