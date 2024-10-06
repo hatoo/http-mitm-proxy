@@ -44,6 +44,7 @@ impl DefaultClient {
     }
 
     /// Send a request and return a response.
+    /// If the response is an upgrade (= if status code is 101 Switching Protocols), it will return a response and an Upgrade struct.
     /// Request should have a full URL including scheme.
     pub async fn send_request<B>(
         &self,

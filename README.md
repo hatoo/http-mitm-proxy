@@ -14,7 +14,8 @@ A HTTP proxy server library intended to be a backend of application like Burp pr
 use std::path::PathBuf;
 
 use clap::{Args, Parser};
-use http_mitm_proxy::{DefaultClient, MitmProxy};
+use futures::StreamExt;
+use http_mitm_proxy::{default_client::Upgrade, DefaultClient, MitmProxy};
 use moka::sync::Cache;
 use tracing_subscriber::EnvFilter;
 
@@ -100,11 +101,36 @@ async fn main() {
                 let uri = req.uri().clone();
 
                 // You can modify request here
-                // or You can just return response anyware
+                // or You can just return response anywhere
 
-                let (res, _upgrade) = client.send_request(req).await?;
+                let (res, upgrade) = client.send_request(req).await?;
 
                 println!("{} -> {}", uri, res.status());
+                if let Some(upgrade) = upgrade {
+                    // If the response is an upgrade, e.g. Websocket, you can see traffic.
+                    // Modifying upgraded traffic is not supported yet.
+
+                    // You can try https://echo.websocket.org/.ws to test websocket.
+                    // But you need to disable alpn of DefaultClient to disable HTTP2 because echo.websocket.org does not support HTTP/2 for Websocket.
+                    // It should be match incoming and outgoing HTTP version on DefaultClient, I'll fix this later. #54
+                    println!("Upgrade connection");
+                    let Upgrade {
+                        mut client_to_server,
+                        mut server_to_client,
+                    } = upgrade;
+                    let url = uri.to_string();
+                    tokio::spawn(async move {
+                        while let Some(data) = client_to_server.next().await {
+                            println!("Client -> Server: {} {:?}", url, data);
+                        }
+                    });
+                    let url = uri.to_string();
+                    tokio::spawn(async move {
+                        while let Some(data) = server_to_client.next().await {
+                            println!("Server -> Client: {} {:?}", url, data);
+                        }
+                    });
+                }
 
                 // You can modify response here
 
