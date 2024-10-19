@@ -74,13 +74,7 @@ async fn main() {
         Some(Cache::new(128)),
     );
 
-    let client = DefaultClient::new(
-        tokio_native_tls::native_tls::TlsConnector::builder()
-            // You must set ALPN if you want to support HTTP/2
-            .request_alpns(&["h2", "http/1.1"])
-            .build()
-            .unwrap(),
-    );
+    let client = DefaultClient::new().unwrap();
     let server = proxy
         .bind(("127.0.0.1", 3003), move |_client_addr, req| {
             let client = client.clone();
@@ -98,8 +92,6 @@ async fn main() {
                     // Modifying upgraded traffic is not supported yet.
 
                     // You can try https://echo.websocket.org/.ws to test websocket.
-                    // But you need to disable alpn of DefaultClient to disable HTTP2 because echo.websocket.org does not support HTTP/2 for Websocket.
-                    // It should be match incoming and outgoing HTTP version on DefaultClient, I'll fix this later. #54
                     println!("Upgrade connection");
                     let Upgrade {
                         mut client_to_server,

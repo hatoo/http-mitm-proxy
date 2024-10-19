@@ -3,7 +3,7 @@ use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender};
 use http_body_util::Empty;
 use hyper::{
     body::{Body, Incoming},
-    client, header, Request, Response, StatusCode, Uri,
+    client, header, Request, Response, StatusCode, Uri, Version,
 };
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use std::task::{Context, Poll};
@@ -37,10 +37,28 @@ pub struct Upgrade {
 }
 #[derive(Clone)]
 /// Default HTTP client for this crate
-pub struct DefaultClient(tokio_native_tls::TlsConnector);
+pub struct DefaultClient {
+    tls_connector_no_alpn: tokio_native_tls::TlsConnector,
+    tls_connector_alpn_h2: tokio_native_tls::TlsConnector,
+}
 impl DefaultClient {
-    pub fn new(tls_connector: native_tls::TlsConnector) -> Self {
-        Self(tls_connector.into())
+    pub fn new() -> native_tls::Result<Self> {
+        let tls_connector_no_alpn = native_tls::TlsConnector::builder().build()?;
+        let tls_connector_alpn_h2 = native_tls::TlsConnector::builder()
+            .request_alpns(&["h2", "http/1.1"])
+            .build()?;
+
+        Ok(Self {
+            tls_connector_no_alpn: tokio_native_tls::TlsConnector::from(tls_connector_no_alpn),
+            tls_connector_alpn_h2: tokio_native_tls::TlsConnector::from(tls_connector_alpn_h2),
+        })
+    }
+
+    fn tls_connector(&self, http_version: Version) -> &tokio_native_tls::TlsConnector {
+        match http_version {
+            Version::HTTP_2 => &self.tls_connector_alpn_h2,
+            _ => &self.tls_connector_no_alpn,
+        }
     }
 
     /// Send a request and return a response.
@@ -55,7 +73,7 @@ impl DefaultClient {
         B::Data: Send,
         B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
     {
-        let mut send_request = self.connect(req.uri()).await?;
+        let mut send_request = self.connect(req.uri(), req.version()).await?;
 
         let (req_parts, req_body) = req.into_parts();
 
@@ -99,7 +117,7 @@ impl DefaultClient {
         Ok((res, None))
     }
 
-    async fn connect<B>(&self, uri: &Uri) -> Result<SendRequest<B>, Error>
+    async fn connect<B>(&self, uri: &Uri, http_version: Version) -> Result<SendRequest<B>, Error>
     where
         B: Body + Unpin + Send + 'static,
         B::Data: Send,
@@ -120,7 +138,7 @@ impl DefaultClient {
 
         if uri.scheme() == Some(&hyper::http::uri::Scheme::HTTPS) {
             let tls = self
-                .0
+                .tls_connector(http_version)
                 .connect(host, tcp)
                 .await
                 .map_err(|err| Error::TlsConnectError(uri.clone(), err))?;

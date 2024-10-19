@@ -80,13 +80,7 @@ async fn main() {
         Some(Cache::new(128)),
     );
 
-    let client = DefaultClient::new(
-        tokio_native_tls::native_tls::TlsConnector::builder()
-            // You must set ALPN if you want to support HTTP/2
-            .request_alpns(&["h2", "http/1.1"])
-            .build()
-            .unwrap(),
-    );
+    let client = DefaultClient::new().unwrap();
     let proxy = proxy
         .bind(("127.0.0.1", 3003), move |_client_addr, mut req| {
             let client = client.clone();

@@ -73,12 +73,7 @@ fn client_tls(proxy_port: u16, cert: &rcgen::CertifiedKey) -> reqwest::Client {
 }
 
 fn proxy_client() -> DefaultClient {
-    DefaultClient::new(
-        tokio_native_tls::native_tls::TlsConnector::builder()
-            .request_alpns(&["h2", "http/1.1"])
-            .build()
-            .unwrap(),
-    )
+    DefaultClient::new().unwrap()
 }
 
 async fn setup<B, E, E2, S, F>(app: Router, service: S) -> (u16, u16)
