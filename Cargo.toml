@@ -48,5 +48,5 @@ reqwest = { version = "0.12.7", features = ["native-tls-alpn"] }
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 
 [[example]]
-name = "proxy"
+name = "websocket"
 required-features = ["websocket"]
