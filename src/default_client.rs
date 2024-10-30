@@ -24,7 +24,7 @@ pub enum Error {
     TlsConnectError(Uri, native_tls::Error),
 }
 
-/// Upgraded connection
+/// Upgraded connections
 pub struct Upgraded {
     /// A socket to Client
     pub client: TokioIo<hyper::upgrade::Upgraded>,
@@ -36,6 +36,8 @@ pub struct Upgraded {
 pub struct DefaultClient {
     tls_connector_no_alpn: tokio_native_tls::TlsConnector,
     tls_connector_alpn_h2: tokio_native_tls::TlsConnector,
+    /// If true, send_request will returns an Upgraded struct when the response is an upgrade
+    /// If false, send_request never returns an Upgraded struct and just copy bidirectional when the response is an upgrade
     pub with_upgrades: bool,
 }
 impl DefaultClient {
@@ -52,6 +54,8 @@ impl DefaultClient {
         })
     }
 
+    /// Enable HTTP upgrades
+    /// If you don't enable HTTP upgrades, send_request will just copy bidirectional when the response is an upgrade
     pub fn with_upgrades(mut self) -> Self {
         self.with_upgrades = true;
         self
