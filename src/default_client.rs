@@ -327,7 +327,7 @@ pub mod websocket {
                 let len = be_u64(input)?;
                 len as usize
             }
-            _ => (b1 & 0b0111_1111) as usize,
+            len => len as usize,
         };
 
         let mask = b1 & 0b1000_0000 != 0;
