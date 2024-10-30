@@ -274,6 +274,31 @@ fn remove_authority<B>(req: &mut Request<B>) {
 }
 
 pub mod websocket {
+    /*
+    https://developer.mozilla.org/en-US/docs/Web/API/WebSockets_API/Writing_WebSocket_servers
+    Frame format:
+
+          0                   1                   2                   3
+          0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+         +-+-+-+-+-------+-+-------------+-------------------------------+
+         |F|R|R|R| opcode|M| Payload len |    Extended payload length    |
+         |I|S|S|S|  (4)  |A|     (7)     |             (16/64)           |
+         |N|V|V|V|       |S|             |   (if payload len==126/127)   |
+         | |1|2|3|       |K|             |                               |
+         +-+-+-+-+-------+-+-------------+ - - - - - - - - - - - - - - - +
+         |     Extended payload length continued, if payload len == 127  |
+         + - - - - - - - - - - - - - - - +-------------------------------+
+         |                               |Masking-key, if MASK set to 1  |
+         +-------------------------------+-------------------------------+
+         | Masking-key (continued)       |          Payload Data         |
+         +-------------------------------- - - - - - - - - - - - - - - - +
+         :                     Payload Data continued ...                :
+         + - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - +
+         |                     Payload Data continued ...                |
+         +---------------------------------------------------------------+
+
+    */
+
     use winnow::{
         binary::{be_u16, be_u64, u8},
         prelude::*,
@@ -301,7 +326,7 @@ pub mod websocket {
                 let len = be_u64(input)?;
                 len as usize
             }
-            _ => b1 as usize,
+            _ => (b1 & 0b0111_1111) as usize,
         };
 
         let mask = b1 & 0b1000_0000 != 0;
@@ -311,6 +336,7 @@ pub mod websocket {
             None
         };
 
+        dbg!(payload_len);
         let mut payload_data = take(payload_len).parse_next(input)?.to_vec();
 
         if let Some(mask) = masking_key {

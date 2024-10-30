@@ -2,7 +2,10 @@ use std::path::PathBuf;
 
 use clap::{Args, Parser};
 use futures::StreamExt;
-use http_mitm_proxy::{default_client::Upgrade, DefaultClient, MitmProxy};
+use http_mitm_proxy::{
+    default_client::{websocket, Upgrade},
+    DefaultClient, MitmProxy,
+};
 use moka::sync::Cache;
 use tracing_subscriber::EnvFilter;
 
@@ -99,22 +102,42 @@ async fn main() {
                     } = upgrade;
                     let url = uri.to_string();
                     tokio::spawn(async move {
+                        let mut buf = Vec::new();
                         while let Some(data) = client_to_server.next().await {
-                            println!(
-                                "Client -> Server: {} {}",
-                                url,
-                                String::from_utf8_lossy(&data)
-                            );
+                            buf.extend(data);
+                            loop {
+                                let input = &mut buf.as_slice();
+                                if let Ok(frame) = websocket::frame(input) {
+                                    println!(
+                                        "Client -> Server: {} {:?}",
+                                        url,
+                                        String::from_utf8_lossy(&frame.payload_data)
+                                    );
+                                    buf = input.to_vec();
+                                } else {
+                                    break;
+                                }
+                            }
                         }
                     });
                     let url = uri.to_string();
                     tokio::spawn(async move {
+                        let mut buf = Vec::new();
                         while let Some(data) = server_to_client.next().await {
-                            println!(
-                                "Server -> Client: {} {:?}",
-                                url,
-                                String::from_utf8_lossy(&data)
-                            );
+                            buf.extend(data);
+                            loop {
+                                let input = &mut buf.as_slice();
+                                if let Ok(frame) = websocket::frame(input) {
+                                    println!(
+                                        "Server -> Client: {} {:?}",
+                                        url,
+                                        String::from_utf8_lossy(&frame.payload_data)
+                                    );
+                                    buf = input.to_vec();
+                                } else {
+                                    break;
+                                }
+                            }
                         }
                     });
                 }
