@@ -337,7 +337,6 @@ pub mod websocket {
             None
         };
 
-        dbg!(payload_len);
         let mut payload_data = take(payload_len).parse_next(input)?.to_vec();
 
         if let Some(mask) = masking_key {

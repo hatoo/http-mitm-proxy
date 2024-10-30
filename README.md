@@ -102,7 +102,7 @@ async fn main() {
 
                 let (res, upgrade) = client.send_request(req).await?;
 
-                // println!("{} -> {}", uri, res.status());
+                println!("{} -> {}", uri, res.status());
                 if let Some(upgrade) = upgrade {
                     // If the response is an upgrade, e.g. Websocket, you can see traffic.
                     // Modifying upgraded traffic is not supported yet.
