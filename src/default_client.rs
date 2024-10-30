@@ -273,6 +273,7 @@ fn remove_authority<B>(req: &mut Request<B>) {
     *req.uri_mut() = Uri::from_parts(parts).unwrap();
 }
 
+#[cfg(feature = "websocket")]
 pub mod websocket {
     /*
     https://developer.mozilla.org/en-US/docs/Web/API/WebSockets_API/Writing_WebSocket_servers
