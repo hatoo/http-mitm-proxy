@@ -14,8 +14,7 @@ A HTTP proxy server library intended to be a backend of application like Burp pr
 use std::path::PathBuf;
 
 use clap::{Args, Parser};
-use futures::StreamExt;
-use http_mitm_proxy::{default_client::Upgrade, DefaultClient, MitmProxy};
+use http_mitm_proxy::{DefaultClient, MitmProxy};
 use moka::sync::Cache;
 use tracing_subscriber::EnvFilter;
 
