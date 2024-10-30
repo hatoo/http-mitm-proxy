@@ -13,9 +13,6 @@ keywords = ["http", "proxy", "http-proxy"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
-[features]
-websocket = ["dep:winnow"]
-
 [dependencies]
 tokio = { version = "1.39.3", features = [
     "macros",
@@ -46,7 +43,7 @@ clap = { version = "4.5.16", features = ["derive"] }
 rcgen = { version = "0.13.1", features = ["x509-parser"] }
 reqwest = { version = "0.12.7", features = ["native-tls-alpn"] }
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
+winnow = "0.6.20"
 
 [[example]]
 name = "websocket"
-required-features = ["websocket"]
