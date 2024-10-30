@@ -1,5 +1,4 @@
 use bytes::Bytes;
-use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender};
 use http_body_util::Empty;
 use hyper::{
     body::{Body, Incoming},
@@ -7,10 +6,7 @@ use hyper::{
 };
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use std::task::{Context, Poll};
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::TcpStream,
-};
+use tokio::{net::TcpStream, task::JoinHandle};
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
@@ -28,18 +24,21 @@ pub enum Error {
     TlsConnectError(Uri, native_tls::Error),
 }
 
-/// Upgraded connection
-pub struct Upgrade {
-    /// Client to server traffic
-    pub client_to_server: UnboundedReceiver<Vec<u8>>,
-    /// Server to client traffic
-    pub server_to_client: UnboundedReceiver<Vec<u8>>,
+/// Upgraded connections
+pub struct Upgraded {
+    /// A socket to Client
+    pub client: TokioIo<hyper::upgrade::Upgraded>,
+    /// A socket to Server
+    pub server: TokioIo<hyper::upgrade::Upgraded>,
 }
 #[derive(Clone)]
 /// Default HTTP client for this crate
 pub struct DefaultClient {
     tls_connector_no_alpn: tokio_native_tls::TlsConnector,
     tls_connector_alpn_h2: tokio_native_tls::TlsConnector,
+    /// If true, send_request will returns an Upgraded struct when the response is an upgrade
+    /// If false, send_request never returns an Upgraded struct and just copy bidirectional when the response is an upgrade
+    pub with_upgrades: bool,
 }
 impl DefaultClient {
     pub fn new() -> native_tls::Result<Self> {
@@ -51,7 +50,15 @@ impl DefaultClient {
         Ok(Self {
             tls_connector_no_alpn: tokio_native_tls::TlsConnector::from(tls_connector_no_alpn),
             tls_connector_alpn_h2: tokio_native_tls::TlsConnector::from(tls_connector_alpn_h2),
+            with_upgrades: false,
         })
+    }
+
+    /// Enable HTTP upgrades
+    /// If you don't enable HTTP upgrades, send_request will just copy bidirectional when the response is an upgrade
+    pub fn with_upgrades(mut self) -> Self {
+        self.with_upgrades = true;
+        self
     }
 
     fn tls_connector(&self, http_version: Version) -> &tokio_native_tls::TlsConnector {
@@ -67,7 +74,13 @@ impl DefaultClient {
     pub async fn send_request<B>(
         &self,
         req: Request<B>,
-    ) -> Result<(Response<Incoming>, Option<Upgrade>), Error>
+    ) -> Result<
+        (
+            Response<Incoming>,
+            Option<JoinHandle<Result<Upgraded, hyper::Error>>>,
+        ),
+        Error,
+    >
     where
         B: Body + Unpin + Send + 'static,
         B::Data: Send,
@@ -82,39 +95,41 @@ impl DefaultClient {
             .await?;
 
         if res.status() == StatusCode::SWITCHING_PROTOCOLS {
-            let (tx_client, rx_client) = futures::channel::mpsc::unbounded();
-            let (tx_server, rx_server) = futures::channel::mpsc::unbounded();
-
             let (res_parts, res_body) = res.into_parts();
 
-            let res0 = Response::from_parts(res_parts.clone(), Empty::<Bytes>::new());
-            tokio::task::spawn(async move {
-                if let (Ok(client), Ok(server)) = (
-                    hyper::upgrade::on(Request::from_parts(req_parts, Empty::<Bytes>::new())).await,
-                    hyper::upgrade::on(res0).await,
-                ) {
-                    upgrade(
-                        TokioIo::new(client),
-                        TokioIo::new(server),
-                        tx_client,
-                        tx_server,
+            let client_request = Request::from_parts(req_parts, Empty::<Bytes>::new());
+            let server_response = Response::from_parts(res_parts.clone(), Empty::<Bytes>::new());
+
+            let upgrade = if self.with_upgrades {
+                Some(tokio::task::spawn(async move {
+                    let client = hyper::upgrade::on(client_request).await?;
+                    let server = hyper::upgrade::on(server_response).await?;
+
+                    Ok(Upgraded {
+                        client: TokioIo::new(client),
+                        server: TokioIo::new(server),
+                    })
+                }))
+            } else {
+                tokio::task::spawn(async move {
+                    let client = hyper::upgrade::on(client_request).await?;
+                    let server = hyper::upgrade::on(server_response).await?;
+
+                    let _ = tokio::io::copy_bidirectional(
+                        &mut TokioIo::new(client),
+                        &mut TokioIo::new(server),
                     )
                     .await;
-                } else {
-                    tracing::error!("Failed to upgrade connection (HTTP)");
-                }
-            });
 
-            return Ok((
-                Response::from_parts(res_parts, res_body),
-                Some(Upgrade {
-                    client_to_server: rx_client,
-                    server_to_client: rx_server,
-                }),
-            ));
+                    Ok::<_, hyper::Error>(())
+                });
+                None
+            };
+
+            Ok((Response::from_parts(res_parts, res_body), upgrade))
+        } else {
+            Ok((res, None))
         }
-
-        Ok((res, None))
     }
 
     async fn connect<B>(&self, uri: &Uri, http_version: Version) -> Result<SendRequest<B>, Error>
@@ -226,44 +241,6 @@ impl<B> SendRequest<B> {
             SendRequest::Http2(sender) => sender.poll_ready(cx),
         }
     }
-}
-
-async fn upgrade<
-    S1: AsyncReadExt + AsyncWriteExt + Unpin + Send + 'static,
-    S2: AsyncReadExt + AsyncWriteExt + Unpin + Send + 'static,
->(
-    client: S1,
-    server: S2,
-    tx_client: UnboundedSender<Vec<u8>>,
-    tx_server: UnboundedSender<Vec<u8>>,
-) {
-    let (mut client_read, mut client_write) = tokio::io::split(client);
-    let (mut server_read, mut server_write) = tokio::io::split(server);
-
-    tokio::spawn(async move {
-        loop {
-            let mut buf = vec![];
-            let n = client_read.read_buf(&mut buf).await?;
-            if n == 0 {
-                break;
-            }
-            server_write.write_all(&buf).await?;
-            let _ = tx_client.unbounded_send(buf);
-        }
-        Ok::<(), std::io::Error>(())
-    });
-    tokio::spawn(async move {
-        loop {
-            let mut buf = vec![];
-            let n = server_read.read_buf(&mut buf).await?;
-            if n == 0 {
-                break;
-            }
-            client_write.write_all(&buf).await?;
-            let _ = tx_server.unbounded_send(buf);
-        }
-        Ok::<(), std::io::Error>(())
-    });
 }
 
 fn remove_authority<B>(req: &mut Request<B>) {
