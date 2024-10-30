@@ -1,7 +1,11 @@
 use std::path::PathBuf;
 
 use clap::{Args, Parser};
-use http_mitm_proxy::{DefaultClient, MitmProxy};
+use futures::StreamExt;
+use http_mitm_proxy::{
+    default_client::{websocket, Upgrade},
+    DefaultClient, MitmProxy,
+};
 use moka::sync::Cache;
 use tracing_subscriber::EnvFilter;
 
@@ -83,9 +87,60 @@ async fn main() {
                 // You can modify request here
                 // or You can just return response anywhere
 
-                let (res, _upgrade) = client.send_request(req).await?;
+                let (res, upgrade) = client.send_request(req).await?;
 
-                println!("{} -> {}", uri, res.status());
+                // println!("{} -> {}", uri, res.status());
+                if let Some(upgrade) = upgrade {
+                    // If the response is an upgrade, e.g. Websocket, you can see traffic.
+                    // Modifying upgraded traffic is not supported yet.
+
+                    // You can try https://echo.websocket.org/.ws to test websocket.
+                    println!("Upgrade connection");
+                    let Upgrade {
+                        mut client_to_server,
+                        mut server_to_client,
+                    } = upgrade;
+                    let url = uri.to_string();
+                    tokio::spawn(async move {
+                        let mut buf = Vec::new();
+                        while let Some(data) = client_to_server.next().await {
+                            buf.extend(data);
+                            loop {
+                                let input = &mut buf.as_slice();
+                                if let Ok(frame) = websocket::frame(input) {
+                                    println!(
+                                        "Client -> Server: {} {:?}",
+                                        url,
+                                        String::from_utf8_lossy(&frame.payload_data)
+                                    );
+                                    buf = input.to_vec();
+                                } else {
+                                    break;
+                                }
+                            }
+                        }
+                    });
+                    let url = uri.to_string();
+                    tokio::spawn(async move {
+                        let mut buf = Vec::new();
+                        while let Some(data) = server_to_client.next().await {
+                            buf.extend(data);
+                            loop {
+                                let input = &mut buf.as_slice();
+                                if let Ok(frame) = websocket::frame(input) {
+                                    println!(
+                                        "Server -> Client: {} {:?}",
+                                        url,
+                                        String::from_utf8_lossy(&frame.payload_data)
+                                    );
+                                    buf = input.to_vec();
+                                } else {
+                                    break;
+                                }
+                            }
+                        }
+                    });
+                }
 
                 // You can modify response here
 

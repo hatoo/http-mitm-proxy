@@ -97,32 +97,9 @@ async fn main() {
                 // You can modify request here
                 // or You can just return response anywhere
 
-                let (res, upgrade) = client.send_request(req).await?;
+                let (res, _upgrade) = client.send_request(req).await?;
 
                 println!("{} -> {}", uri, res.status());
-                if let Some(upgrade) = upgrade {
-                    // If the response is an upgrade, e.g. Websocket, you can see traffic.
-                    // Modifying upgraded traffic is not supported yet.
-
-                    // You can try https://echo.websocket.org/.ws to test websocket.
-                    println!("Upgrade connection");
-                    let Upgrade {
-                        mut client_to_server,
-                        mut server_to_client,
-                    } = upgrade;
-                    let url = uri.to_string();
-                    tokio::spawn(async move {
-                        while let Some(data) = client_to_server.next().await {
-                            println!("Client -> Server: {} {:?}", url, data);
-                        }
-                    });
-                    let url = uri.to_string();
-                    tokio::spawn(async move {
-                        while let Some(data) = server_to_client.next().await {
-                            println!("Server -> Client: {} {:?}", url, data);
-                        }
-                    });
-                }
 
                 // You can modify response here
 

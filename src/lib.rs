@@ -206,17 +206,15 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
     }
 
     fn get_certified_key(&self, host: String) -> Option<CertifiedKeyDer> {
-        if let Some(root_cert) = self.root_cert.as_ref() {
-            Some(if let Some(cache) = self.cert_cache.as_ref() {
+        self.root_cert.as_ref().map(|root_cert| {
+            if let Some(cache) = self.cert_cache.as_ref() {
                 cache.get_with(host.clone(), move || {
                     generate_cert(host, root_cert.borrow())
                 })
             } else {
                 generate_cert(host, root_cert.borrow())
-            })
-        } else {
-            None
-        }
+            }
+        })
     }
 
     fn server_config(
