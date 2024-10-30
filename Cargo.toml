@@ -14,7 +14,6 @@ keywords = ["http", "proxy", "http-proxy"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [features]
-default = ["websocket"]
 websocket = ["dep:winnow"]
 
 [dependencies]

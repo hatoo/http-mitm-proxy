@@ -1,7 +1,6 @@
 use std::path::PathBuf;
 
 use clap::{Args, Parser};
-use futures::StreamExt;
 use http_mitm_proxy::{
     default_client::{websocket, Upgraded},
     DefaultClient, MitmProxy,
