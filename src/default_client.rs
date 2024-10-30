@@ -10,6 +10,7 @@ use std::task::{Context, Poll};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
+    task::JoinHandle,
 };
 
 #[derive(thiserror::Error, Debug)]
@@ -29,11 +30,11 @@ pub enum Error {
 }
 
 /// Upgraded connection
-pub struct Upgrade {
-    /// Client to server traffic
-    pub client_to_server: UnboundedReceiver<Vec<u8>>,
-    /// Server to client traffic
-    pub server_to_client: UnboundedReceiver<Vec<u8>>,
+pub struct Upgraded {
+    /// A socket to Client
+    pub client: TokioIo<hyper::upgrade::Upgraded>,
+    /// A socket to Server
+    pub server: TokioIo<hyper::upgrade::Upgraded>,
 }
 #[derive(Clone)]
 /// Default HTTP client for this crate
@@ -67,7 +68,13 @@ impl DefaultClient {
     pub async fn send_request<B>(
         &self,
         req: Request<B>,
-    ) -> Result<(Response<Incoming>, Option<Upgrade>), Error>
+    ) -> Result<
+        (
+            Response<Incoming>,
+            Option<JoinHandle<Result<Upgraded, hyper::Error>>>,
+        ),
+        Error,
+    >
     where
         B: Body + Unpin + Send + 'static,
         B::Data: Send,
@@ -82,36 +89,22 @@ impl DefaultClient {
             .await?;
 
         if res.status() == StatusCode::SWITCHING_PROTOCOLS {
-            let (tx_client, rx_client) = futures::channel::mpsc::unbounded();
-            let (tx_server, rx_server) = futures::channel::mpsc::unbounded();
-
             let (res_parts, res_body) = res.into_parts();
 
             let res0 = Response::from_parts(res_parts.clone(), Empty::<Bytes>::new());
-            tokio::task::spawn(async move {
-                if let (Ok(client), Ok(server)) = (
-                    hyper::upgrade::on(Request::from_parts(req_parts, Empty::<Bytes>::new())).await,
-                    hyper::upgrade::on(res0).await,
-                ) {
-                    upgrade(
-                        TokioIo::new(client),
-                        TokioIo::new(server),
-                        tx_client,
-                        tx_server,
-                    )
-                    .await;
-                } else {
-                    tracing::error!("Failed to upgrade connection (HTTP)");
-                }
+            let upgrade = tokio::task::spawn(async move {
+                let client =
+                    hyper::upgrade::on(Request::from_parts(req_parts, Empty::<Bytes>::new()))
+                        .await?;
+                let server = hyper::upgrade::on(res0).await?;
+
+                Ok(Upgraded {
+                    client: TokioIo::new(client),
+                    server: TokioIo::new(server),
+                })
             });
 
-            return Ok((
-                Response::from_parts(res_parts, res_body),
-                Some(Upgrade {
-                    client_to_server: rx_client,
-                    server_to_client: rx_server,
-                }),
-            ));
+            return Ok((Response::from_parts(res_parts, res_body), Some(upgrade)));
         }
 
         Ok((res, None))

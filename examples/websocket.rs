@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use clap::{Args, Parser};
 use futures::StreamExt;
 use http_mitm_proxy::{
-    default_client::{websocket, Upgrade},
+    default_client::{websocket, Upgraded},
     DefaultClient, MitmProxy,
 };
 use moka::sync::Cache;
@@ -96,9 +96,9 @@ async fn main() {
 
                     // You can try https://echo.websocket.org/.ws to test websocket.
                     println!("Upgrade connection");
-                    let Upgrade {
-                        mut client_to_server,
-                        mut server_to_client,
+                    let Upgraded {
+                        mut client,
+                        mut server,
                     } = upgrade;
                     let url = uri.to_string();
                     tokio::spawn(async move {
