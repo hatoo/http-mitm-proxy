@@ -86,7 +86,7 @@ async fn main() {
 
                 let (res, upgrade) = client.send_request(req).await?;
 
-                println!("{} -> {}", uri, res.status());
+                // println!("{} -> {}", uri, res.status());
                 if let Some(upgrade) = upgrade {
                     // If the response is an upgrade, e.g. Websocket, you can see traffic.
                     // Modifying upgraded traffic is not supported yet.
@@ -100,13 +100,21 @@ async fn main() {
                     let url = uri.to_string();
                     tokio::spawn(async move {
                         while let Some(data) = client_to_server.next().await {
-                            println!("Client -> Server: {} {:?}", url, data);
+                            println!(
+                                "Client -> Server: {} {}",
+                                url,
+                                String::from_utf8_lossy(&data)
+                            );
                         }
                     });
                     let url = uri.to_string();
                     tokio::spawn(async move {
                         while let Some(data) = server_to_client.next().await {
-                            println!("Server -> Client: {} {:?}", url, data);
+                            println!(
+                                "Server -> Client: {} {:?}",
+                                url,
+                                String::from_utf8_lossy(&data)
+                            );
                         }
                     });
                 }

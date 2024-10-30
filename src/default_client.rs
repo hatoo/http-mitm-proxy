@@ -272,3 +272,59 @@ fn remove_authority<B>(req: &mut Request<B>) {
     parts.authority = None;
     *req.uri_mut() = Uri::from_parts(parts).unwrap();
 }
+
+pub mod websocket {
+    use winnow::{
+        binary::{be_u16, be_u64, u8},
+        prelude::*,
+        token::take,
+    };
+
+    pub struct Frame {
+        pub b0: u8,
+        pub b1: u8,
+        pub payload_len: usize,
+        pub masking_key: Option<[u8; 4]>,
+        pub payload_data: Vec<u8>,
+    }
+
+    pub fn frame(input: &mut &[u8]) -> PResult<Frame> {
+        let b0 = u8(input)?;
+        let b1 = u8(input)?;
+
+        let payload_len = match b1 & 0b0111_1111 {
+            126 => {
+                let len = be_u16(input)?;
+                len as usize
+            }
+            127 => {
+                let len = be_u64(input)?;
+                len as usize
+            }
+            _ => b1 as usize,
+        };
+
+        let mask = b1 & 0b1000_0000 != 0;
+        let masking_key = if mask {
+            Some([u8(input)?, u8(input)?, u8(input)?, u8(input)?])
+        } else {
+            None
+        };
+
+        let mut payload_data = take(payload_len).parse_next(input)?.to_vec();
+
+        if let Some(mask) = masking_key {
+            for (i, byte) in payload_data.iter_mut().enumerate() {
+                *byte ^= mask[i % 4];
+            }
+        }
+
+        Ok(Frame {
+            b0,
+            b1,
+            payload_len,
+            masking_key,
+            payload_data,
+        })
+    }
+}
