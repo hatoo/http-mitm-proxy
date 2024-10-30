@@ -51,6 +51,7 @@ async fn main() {
 
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env())
+        .with_line_number(true)
         .init();
 
     let root_cert = if let Some(external_cert) = opt.external_cert {
@@ -98,72 +99,71 @@ async fn main() {
 
                     // You can try https://echo.websocket.org/.ws to test websocket.
                     println!("Upgrade connection");
-                    if let Upgraded { client, server } = upgrade.await.unwrap().unwrap() {
-                        dbg!("here");
+
+                    tokio::spawn(async move {
+                        let Upgraded { client, server } = upgrade.await.unwrap().unwrap();
                         let url = uri.to_string();
 
-                        tokio::spawn(async move {
-                            let (mut client_rx, mut client_tx) = tokio::io::split(client);
-                            let (mut server_rx, mut server_tx) = tokio::io::split(server);
+                        let (mut client_rx, mut client_tx) = tokio::io::split(client);
+                        let (mut server_rx, mut server_tx) = tokio::io::split(server);
 
-                            let url0 = url.clone();
-                            let client_to_server = async move {
-                                let mut buf = Vec::new();
+                        let url0 = url.clone();
+                        let client_to_server = async move {
+                            let mut buf = Vec::new();
 
+                            loop {
+                                if client_rx.read_buf(&mut buf).await.unwrap() == 0 {
+                                    break;
+                                }
                                 loop {
-                                    if client_rx.read_buf(&mut buf).await.unwrap() == 0 {
+                                    let input = &mut buf.as_slice();
+                                    if let Ok((frame, read)) =
+                                        websocket::frame.with_taken().parse_next(input)
+                                    {
+                                        println!(
+                                            "{} Client: {}",
+                                            &url0,
+                                            String::from_utf8_lossy(&frame.payload_data)
+                                        );
+                                        server_tx.write_all(read).await.unwrap();
+                                        buf = input.to_vec();
+                                    } else {
                                         break;
                                     }
-                                    loop {
-                                        let input = &mut buf.as_slice();
-                                        if let Ok((frame, read)) =
-                                            websocket::frame.with_taken().parse_next(input)
-                                        {
-                                            println!(
-                                                "{} Client: {}",
-                                                &url0,
-                                                String::from_utf8_lossy(&frame.payload_data)
-                                            );
-                                            server_tx.write_all(read).await.unwrap();
-                                            buf = input.to_vec();
-                                        } else {
-                                            break;
-                                        }
-                                    }
                                 }
-                            };
+                            }
+                        };
 
-                            let url0 = url.clone();
-                            let server_to_client = async move {
-                                let mut buf = Vec::new();
+                        let url0 = url.clone();
+                        let server_to_client = async move {
+                            let mut buf = Vec::new();
 
+                            loop {
+                                if server_rx.read_buf(&mut buf).await.unwrap() == 0 {
+                                    break;
+                                }
                                 loop {
-                                    if server_rx.read_buf(&mut buf).await.unwrap() == 0 {
+                                    let input = &mut buf.as_slice();
+                                    if let Ok((frame, read)) =
+                                        websocket::frame.with_taken().parse_next(input)
+                                    {
+                                        println!(
+                                            "{} Server: {}",
+                                            &url0,
+                                            String::from_utf8_lossy(&frame.payload_data)
+                                        );
+                                        client_tx.write_all(read).await.unwrap();
+                                        buf = input.to_vec();
+                                    } else {
                                         break;
                                     }
-                                    loop {
-                                        let input = &mut buf.as_slice();
-                                        if let Ok((frame, read)) =
-                                            websocket::frame.with_taken().parse_next(input)
-                                        {
-                                            println!(
-                                                "{} Server: {}",
-                                                &url0,
-                                                String::from_utf8_lossy(&frame.payload_data)
-                                            );
-                                            client_tx.write_all(read).await.unwrap();
-                                            buf = input.to_vec();
-                                        } else {
-                                            break;
-                                        }
-                                    }
                                 }
-                            };
+                            }
+                        };
 
-                            tokio::spawn(client_to_server);
-                            tokio::spawn(server_to_client);
-                        });
-                    }
+                        tokio::spawn(client_to_server);
+                        tokio::spawn(server_to_client);
+                    });
                 }
 
                 // You can modify response here

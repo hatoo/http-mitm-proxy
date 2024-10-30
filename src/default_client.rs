@@ -93,13 +93,13 @@ impl DefaultClient {
         if res.status() == StatusCode::SWITCHING_PROTOCOLS {
             let (res_parts, res_body) = res.into_parts();
 
-            let res0 = Response::from_parts(res_parts.clone(), Empty::<Bytes>::new());
+            let client_request = Request::from_parts(req_parts, Empty::<Bytes>::new());
+            let server_response = Response::from_parts(res_parts.clone(), Empty::<Bytes>::new());
+
             let upgrade = if self.with_upgrades {
                 Some(tokio::task::spawn(async move {
-                    let client =
-                        hyper::upgrade::on(Request::from_parts(req_parts, Empty::<Bytes>::new()))
-                            .await?;
-                    let server = hyper::upgrade::on(res0).await?;
+                    let client = hyper::upgrade::on(client_request).await?;
+                    let server = hyper::upgrade::on(server_response).await?;
 
                     Ok(Upgraded {
                         client: TokioIo::new(client),
@@ -108,10 +108,8 @@ impl DefaultClient {
                 }))
             } else {
                 tokio::task::spawn(async move {
-                    let client =
-                        hyper::upgrade::on(Request::from_parts(req_parts, Empty::<Bytes>::new()))
-                            .await?;
-                    let server = hyper::upgrade::on(res0).await?;
+                    let client = hyper::upgrade::on(client_request).await?;
+                    let server = hyper::upgrade::on(server_response).await?;
 
                     let _ = tokio::io::copy_bidirectional(
                         &mut TokioIo::new(client),
