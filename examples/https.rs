@@ -107,7 +107,6 @@ async fn main() {
 
             tokio::spawn(async move {
                 let service = service_fn(move |req| {
-                    let proxy = proxy.clone();
                     let client = client.clone();
 
                     MitmProxy::hyper_service(
