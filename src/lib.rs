@@ -98,7 +98,7 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
         })
     }
 
-    async fn proxy<S, B, E, E2, F>(
+    pub async fn proxy<S, B, E, E2, F>(
         proxy: Arc<MitmProxy<C>>,
         client_addr: SocketAddr,
         req: Request<Incoming>,
