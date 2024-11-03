@@ -73,6 +73,7 @@ async fn main() {
     let root_cert_pem = root_cert.cert.pem();
     let root_cert_key = root_cert.key_pair.serialize_pem();
 
+    // Reusing the same root cert for proxy server
     let mut server_config = ServerConfig::builder()
         .with_no_client_auth()
         .with_single_cert(
@@ -109,23 +110,28 @@ async fn main() {
                     let proxy = proxy.clone();
                     let client = client.clone();
 
-                    MitmProxy::proxy(proxy.clone(), client_addr, req, move |_client_addr, req| {
-                        let client = client.clone();
-                        async move {
-                            let uri = req.uri().clone();
+                    MitmProxy::hyper_service(
+                        proxy.clone(),
+                        client_addr,
+                        req,
+                        move |_client_addr, req| {
+                            let client = client.clone();
+                            async move {
+                                let uri = req.uri().clone();
 
-                            // You can modify request here
-                            // or You can just return response anywhere
+                                // You can modify request here
+                                // or You can just return response anywhere
 
-                            let (res, _upgrade) = client.send_request(req).await?;
+                                let (res, _upgrade) = client.send_request(req).await?;
 
-                            println!("{} -> {}", uri, res.status());
+                                println!("{} -> {}", uri, res.status());
 
-                            // You can modify response here
+                                // You can modify response here
 
-                            Ok::<_, http_mitm_proxy::default_client::Error>(res)
-                        }
-                    })
+                                Ok::<_, http_mitm_proxy::default_client::Error>(res)
+                            }
+                        },
+                    )
                 });
 
                 let stream = tls_acceptor.accept(stream).await.unwrap();
@@ -140,30 +146,7 @@ async fn main() {
         }
     };
 
-    /*
-    let server = proxy
-        .bind(("127.0.0.1", 3003), move |_client_addr, req| {
-            let client = client.clone();
-            async move {
-                let uri = req.uri().clone();
-
-                // You can modify request here
-                // or You can just return response anywhere
-
-                let (res, _upgrade) = client.send_request(req).await?;
-
-                println!("{} -> {}", uri, res.status());
-
-                // You can modify response here
-
-                Ok::<_, http_mitm_proxy::default_client::Error>(res)
-            }
-        })
-        .await
-        .unwrap();
-    */
-
-    println!("HTTP Proxy is listening on http://127.0.0.1:3003");
+    println!("HTTPS Proxy is listening on https://127.0.0.1:3003");
 
     println!();
     println!("Trust this cert if you want to use HTTPS");
@@ -172,8 +155,8 @@ async fn main() {
     println!();
 
     /*
-        Save this cert to ca.crt and use it with curl like this:
-        curl https://www.google.com -x http://127.0.0.1:3003 --cacert ca.crt
+        You can test HTTPS proxy with curl like this:
+        curl -x https://localhost:3003 https://example.com --insecure --proxy-insecure
     */
 
     println!("Private key");

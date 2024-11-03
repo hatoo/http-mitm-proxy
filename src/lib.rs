@@ -85,7 +85,12 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
                         .serve_connection(
                             TokioIo::new(stream),
                             service_fn(|req| {
-                                Self::proxy(proxy.clone(), client_addr, req, service.clone())
+                                Self::hyper_service(
+                                    proxy.clone(),
+                                    client_addr,
+                                    req,
+                                    service.clone(),
+                                )
                             }),
                         )
                         .with_upgrades()
@@ -98,7 +103,7 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
         })
     }
 
-    pub async fn proxy<S, B, E, E2, F>(
+    pub async fn hyper_service<S, B, E, E2, F>(
         proxy: Arc<MitmProxy<C>>,
         client_addr: SocketAddr,
         req: Request<Incoming>,
@@ -178,8 +183,9 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
                             .await
                     };
 
-                    if let Err(err) = res {
-                        tracing::error!("Error in proxy: {}", err);
+                    if let Err(_err) = res {
+                        // Suppress error because if we serving HTTPS proxy server and forward to HTTPS server, it will always error when closing connection.
+                        // tracing::error!("Error in proxy: {}", err);
                     }
                 } else {
                     let Ok(mut server) = TcpStream::connect(connect_authority.as_str()).await
