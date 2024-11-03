@@ -103,8 +103,12 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
         })
     }
 
+    /// A service that can be used with hyper server.
+    /// See `examples/https.rs` for usage.
+    /// If you want to serve simple HTTP proxy server, you can use `bind` method instead.
+    /// `bind` will call this method internally.
     pub async fn hyper_service<S, B, E, E2, F>(
-        proxy: Arc<MitmProxy<C>>,
+        proxy: Arc<Self>,
         client_addr: SocketAddr,
         req: Request<Incoming>,
         service: S,
