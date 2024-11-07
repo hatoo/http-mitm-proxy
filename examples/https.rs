@@ -106,31 +106,27 @@ async fn main() {
             let tls_acceptor = tls_acceptor.clone();
 
             tokio::spawn(async move {
-                let service = service_fn(move |req| {
-                    let client = client.clone();
+                let client = client.clone();
+                let service = MitmProxy::wrap_service(
+                    proxy.clone(),
+                    service_fn(move |req| {
+                        let client = client.clone();
+                        async move {
+                            let uri = req.uri().clone();
 
-                    MitmProxy::wrap_service(
-                        proxy.clone(),
-                        req,
-                        service_fn(move |req| {
-                            let client = client.clone();
-                            async move {
-                                let uri = req.uri().clone();
+                            // You can modify request here
+                            // or You can just return response anywhere
 
-                                // You can modify request here
-                                // or You can just return response anywhere
+                            let (res, _upgrade) = client.send_request(req).await?;
 
-                                let (res, _upgrade) = client.send_request(req).await?;
+                            println!("{} -> {}", uri, res.status());
 
-                                println!("{} -> {}", uri, res.status());
+                            // You can modify response here
 
-                                // You can modify response here
-
-                                Ok::<_, http_mitm_proxy::default_client::Error>(res)
-                            }
-                        }),
-                    )
-                });
+                            Ok::<_, http_mitm_proxy::default_client::Error>(res)
+                        }
+                    }),
+                );
 
                 let stream = tls_acceptor.accept(stream).await.unwrap();
                 hyper::server::conn::http1::Builder::new()
