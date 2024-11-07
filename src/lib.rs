@@ -88,7 +88,7 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
                         .serve_connection(
                             TokioIo::new(stream),
                             service_fn(|req| {
-                                Self::hyper_service(proxy.clone(), req, service.clone())
+                                Self::wrap_service(proxy.clone(), req, service.clone())
                             }),
                         )
                         .with_upgrades()
@@ -101,11 +101,12 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
         })
     }
 
-    /// A service that can be used with hyper server.
+    /// Transform a service to a service that can be used in hyper server.
+    /// URL for requests that passed to service are full URL including scheme.
     /// See `examples/https.rs` for usage.
     /// If you want to serve simple HTTP proxy server, you can use `bind` method instead.
     /// `bind` will call this method internally.
-    pub async fn hyper_service<S, B, E, E2>(
+    pub async fn wrap_service<S, B, E, E2>(
         proxy: Arc<Self>,
         req: Request<Incoming>,
         mut service: S,

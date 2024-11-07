@@ -109,7 +109,7 @@ async fn main() {
                 let service = service_fn(move |req| {
                     let client = client.clone();
 
-                    MitmProxy::hyper_service(
+                    MitmProxy::wrap_service(
                         proxy.clone(),
                         req,
                         service_fn(move |req| {
