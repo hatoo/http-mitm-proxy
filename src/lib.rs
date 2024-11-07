@@ -1,11 +1,11 @@
 #![doc = include_str!("../README.md")]
 
-use bytes::Bytes;
+use bytes::{Buf, Bytes};
 use http_body_util::{combinators::BoxBody, BodyExt, Empty};
 use hyper::{
     body::{Body, Incoming},
     server,
-    service::{service_fn, HttpService},
+    service::{service_fn, HttpService, Service},
     Method, Request, Response, StatusCode,
 };
 use hyper_util::rt::{TokioExecutor, TokioIo};
@@ -19,7 +19,7 @@ use std::{
 };
 use tls::{generate_cert, CertifiedKeyDer};
 use tokio::net::{TcpListener, TcpStream, ToSocketAddrs};
-use tower::{Layer, Service};
+use tower::Layer;
 
 pub use futures;
 pub use hyper;
@@ -84,11 +84,19 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
         B: Body<Data = Bytes, Error = E> + Send + Sync + 'static,
         E: std::error::Error + Send + Sync + 'static,
         E2: std::error::Error + Send + Sync + 'static,
+        /*
         S: HttpService<Incoming, ResBody = B, Error = E2, Future: Send>
             + Send
             + Sync
             + Clone
             + 'static,
+        */
+        S: HttpService<Incoming> + Send + Clone + 'static,
+        S::Future: Send + 'static,
+        S::ResBody: Send + Sync + 'static,
+        <S::ResBody as Body>::Data: Send + Sync + 'static,
+        <S::ResBody as Body>::Error: Into<Box<dyn std::error::Error + Send + Sync + 'static>>,
+        S::Error: Into<Box<dyn std::error::Error + Send + Sync + 'static>>,
     {
         let listener = TcpListener::bind(addr).await?;
 
@@ -109,7 +117,7 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
                     if let Err(err) = server::conn::http1::Builder::new()
                         .preserve_header_case(true)
                         .title_case_headers(true)
-                        .serve_connection(TokioIo::new(stream), proxy.wrap_service(service.clone()))
+                        .serve_connection(TokioIo::new(stream), proxy.layer(service.clone()))
                         .with_upgrades()
                         .await
                     {
