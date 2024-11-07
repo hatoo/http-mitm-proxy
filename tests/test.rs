@@ -1,6 +1,5 @@
 use std::{
     convert::Infallible,
-    net::SocketAddr,
     sync::{atomic::AtomicU16, Arc},
 };
 
@@ -15,7 +14,8 @@ use futures::stream;
 use http_mitm_proxy::{DefaultClient, MitmProxy};
 use hyper::{
     body::{Body, Incoming},
-    Response, Uri,
+    service::{service_fn, HttpService},
+    Uri,
 };
 use moka::sync::Cache;
 
@@ -76,13 +76,12 @@ fn proxy_client() -> DefaultClient {
     DefaultClient::new().unwrap()
 }
 
-async fn setup<B, E, E2, S, F>(app: Router, service: S) -> (u16, u16)
+async fn setup<B, E, E2, S>(app: Router, service: S) -> (u16, u16)
 where
     B: Body<Data = Bytes, Error = E> + Send + Sync + 'static,
     E: std::error::Error + Send + Sync + 'static,
     E2: std::error::Error + Send + Sync + 'static,
-    S: Fn(SocketAddr, Request<Incoming>) -> F + Send + Sync + Clone + 'static,
-    F: std::future::Future<Output = Result<Response<B>, E2>> + Send + 'static,
+    S: HttpService<Incoming, ResBody = B, Error = E2, Future: Send> + Send + Sync + Clone + 'static,
 {
     let proxy = MitmProxy::new(Some(root_cert()), Some(Cache::new(128)));
     let proxy_port = get_port();
@@ -98,7 +97,7 @@ where
     (proxy_port, port)
 }
 
-async fn setup_tls<B, E, E2, S, F>(
+async fn setup_tls<B, E, E2, S>(
     app: Router,
     service: S,
     root_cert: Arc<rcgen::CertifiedKey>,
@@ -107,8 +106,7 @@ where
     B: Body<Data = Bytes, Error = E> + Send + Sync + 'static,
     E: std::error::Error + Send + Sync + 'static,
     E2: std::error::Error + Send + Sync + 'static,
-    S: Fn(SocketAddr, Request<Incoming>) -> F + Send + Sync + Clone + 'static,
-    F: std::future::Future<Output = Result<Response<B>, E2>> + Send + 'static,
+    S: HttpService<Incoming, ResBody = B, Error = E2, Future: Send> + Send + Sync + Clone + 'static,
 {
     let proxy = MitmProxy::new(Some(root_cert), Some(Cache::new(128)));
     let proxy_port = get_port();
@@ -130,10 +128,13 @@ async fn test_simple_http() {
     let app = Router::new().route("/", get(|| async move { BODY }));
 
     let proxy_client = proxy_client();
-    let (proxy_port, port) = setup(app, move |_, req| {
-        let proxy_client = proxy_client.clone();
-        async move { proxy_client.send_request(req).await.map(|t| t.0) }
-    })
+    let (proxy_port, port) = setup(
+        app,
+        service_fn(move |req| {
+            let proxy_client = proxy_client.clone();
+            async move { proxy_client.send_request(req).await.map(|t| t.0) }
+        }),
+    )
     .await;
 
     let client = client(proxy_port);
@@ -162,14 +163,17 @@ async fn test_modify_http() {
     );
 
     let proxy_client = proxy_client();
-    let (proxy_port, port) = setup(app, move |_, mut req| {
-        let proxy_client = proxy_client.clone();
-        async move {
-            req.headers_mut()
-                .insert("X-test", "modified".parse().unwrap());
-            proxy_client.send_request(req).await.map(|t| t.0)
-        }
-    })
+    let (proxy_port, port) = setup(
+        app,
+        service_fn(move |mut req| {
+            let proxy_client = proxy_client.clone();
+            async move {
+                req.headers_mut()
+                    .insert("X-test", "modified".parse().unwrap());
+                proxy_client.send_request(req).await.map(|t| t.0)
+            }
+        }),
+    )
     .await;
 
     let client = client(proxy_port);
@@ -196,10 +200,13 @@ async fn test_sse_http() {
     );
 
     let proxy_client = proxy_client();
-    let (proxy_port, port) = setup(app, move |_, req| {
-        let proxy_client = proxy_client.clone();
-        async move { proxy_client.send_request(req).await.map(|t| t.0) }
-    })
+    let (proxy_port, port) = setup(
+        app,
+        service_fn(move |req| {
+            let proxy_client = proxy_client.clone();
+            async move { proxy_client.send_request(req).await.map(|t| t.0) }
+        }),
+    )
     .await;
 
     let client = client(proxy_port);
@@ -225,7 +232,7 @@ async fn test_simple_https() {
     let proxy_client = proxy_client();
     let (proxy_port, port) = setup_tls(
         app,
-        move |_, mut req| {
+        service_fn(move |mut req| {
             let proxy_client = proxy_client.clone();
             async move {
                 let mut parts = req.uri().clone().into_parts();
@@ -235,7 +242,7 @@ async fn test_simple_https() {
 
                 proxy_client.send_request(req).await.map(|t| t.0)
             }
-        },
+        }),
         cert.clone(),
     )
     .await;

@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use clap::{Args, Parser};
 use http_mitm_proxy::{default_client::Upgraded, DefaultClient, MitmProxy};
+use hyper::service::service_fn;
 use moka::sync::Cache;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tracing_subscriber::EnvFilter;
@@ -78,95 +79,98 @@ async fn main() {
 
     let client = DefaultClient::new().unwrap().with_upgrades();
     let server = proxy
-        .bind(("127.0.0.1", 3003), move |_client_addr, req| {
-            let client = client.clone();
-            async move {
-                let uri = req.uri().clone();
+        .bind(
+            ("127.0.0.1", 3003),
+            service_fn(move |req| {
+                let client = client.clone();
+                async move {
+                    let uri = req.uri().clone();
 
-                // You can modify request here
-                // or You can just return response anywhere
+                    // You can modify request here
+                    // or You can just return response anywhere
 
-                let (res, upgrade) = client.send_request(req).await?;
+                    let (res, upgrade) = client.send_request(req).await?;
 
-                // println!("{} -> {}", uri, res.status());
-                if let Some(upgrade) = upgrade {
-                    // If the response is an upgrade, e.g. Websocket, you can see traffic.
-                    // Modifying upgraded traffic is not supported yet.
+                    // println!("{} -> {}", uri, res.status());
+                    if let Some(upgrade) = upgrade {
+                        // If the response is an upgrade, e.g. Websocket, you can see traffic.
+                        // Modifying upgraded traffic is not supported yet.
 
-                    // You can try https://echo.websocket.org/.ws to test websocket.
-                    println!("Upgrade connection");
+                        // You can try https://echo.websocket.org/.ws to test websocket.
+                        println!("Upgrade connection");
 
-                    tokio::spawn(async move {
-                        let Upgraded { client, server } = upgrade.await.unwrap().unwrap();
-                        let url = uri.to_string();
+                        tokio::spawn(async move {
+                            let Upgraded { client, server } = upgrade.await.unwrap().unwrap();
+                            let url = uri.to_string();
 
-                        let (mut client_rx, mut client_tx) = tokio::io::split(client);
-                        let (mut server_rx, mut server_tx) = tokio::io::split(server);
+                            let (mut client_rx, mut client_tx) = tokio::io::split(client);
+                            let (mut server_rx, mut server_tx) = tokio::io::split(server);
 
-                        let url0 = url.clone();
-                        let client_to_server = async move {
-                            let mut buf = Vec::new();
+                            let url0 = url.clone();
+                            let client_to_server = async move {
+                                let mut buf = Vec::new();
 
-                            loop {
-                                if client_rx.read_buf(&mut buf).await.unwrap() == 0 {
-                                    break;
-                                }
                                 loop {
-                                    let input = &mut buf.as_slice();
-                                    if let Ok((frame, read)) =
-                                        websocket::frame.with_taken().parse_next(input)
-                                    {
-                                        println!(
-                                            "{} Client: {}",
-                                            &url0,
-                                            String::from_utf8_lossy(&frame.payload_data)
-                                        );
-                                        server_tx.write_all(read).await.unwrap();
-                                        buf = input.to_vec();
-                                    } else {
+                                    if client_rx.read_buf(&mut buf).await.unwrap() == 0 {
                                         break;
                                     }
-                                }
-                            }
-                        };
-
-                        let url0 = url.clone();
-                        let server_to_client = async move {
-                            let mut buf = Vec::new();
-
-                            loop {
-                                if server_rx.read_buf(&mut buf).await.unwrap() == 0 {
-                                    break;
-                                }
-                                loop {
-                                    let input = &mut buf.as_slice();
-                                    if let Ok((frame, read)) =
-                                        websocket::frame.with_taken().parse_next(input)
-                                    {
-                                        println!(
-                                            "{} Server: {}",
-                                            &url0,
-                                            String::from_utf8_lossy(&frame.payload_data)
-                                        );
-                                        client_tx.write_all(read).await.unwrap();
-                                        buf = input.to_vec();
-                                    } else {
-                                        break;
+                                    loop {
+                                        let input = &mut buf.as_slice();
+                                        if let Ok((frame, read)) =
+                                            websocket::frame.with_taken().parse_next(input)
+                                        {
+                                            println!(
+                                                "{} Client: {}",
+                                                &url0,
+                                                String::from_utf8_lossy(&frame.payload_data)
+                                            );
+                                            server_tx.write_all(read).await.unwrap();
+                                            buf = input.to_vec();
+                                        } else {
+                                            break;
+                                        }
                                     }
                                 }
-                            }
-                        };
+                            };
 
-                        tokio::spawn(client_to_server);
-                        tokio::spawn(server_to_client);
-                    });
+                            let url0 = url.clone();
+                            let server_to_client = async move {
+                                let mut buf = Vec::new();
+
+                                loop {
+                                    if server_rx.read_buf(&mut buf).await.unwrap() == 0 {
+                                        break;
+                                    }
+                                    loop {
+                                        let input = &mut buf.as_slice();
+                                        if let Ok((frame, read)) =
+                                            websocket::frame.with_taken().parse_next(input)
+                                        {
+                                            println!(
+                                                "{} Server: {}",
+                                                &url0,
+                                                String::from_utf8_lossy(&frame.payload_data)
+                                            );
+                                            client_tx.write_all(read).await.unwrap();
+                                            buf = input.to_vec();
+                                        } else {
+                                            break;
+                                        }
+                                    }
+                                }
+                            };
+
+                            tokio::spawn(client_to_server);
+                            tokio::spawn(server_to_client);
+                        });
+                    }
+
+                    // You can modify response here
+
+                    Ok::<_, http_mitm_proxy::default_client::Error>(res)
                 }
-
-                // You can modify response here
-
-                Ok::<_, http_mitm_proxy::default_client::Error>(res)
-            }
-        })
+            }),
+        )
         .await
         .unwrap();
 
