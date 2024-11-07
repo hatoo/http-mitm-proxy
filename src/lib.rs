@@ -104,7 +104,7 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
     pub fn wrap_service<S, B, E>(
         proxy: Arc<Self>,
         service: S,
-    ) -> impl HttpService<Incoming, ResBody = BoxBody<B::Data, B::Error>, Error = E, Future: Send>
+    ) -> impl HttpService<Incoming, ResBody = BoxBody<B::Data, B::Error>, Future: Send>
     where
         S: HttpService<Incoming, ResBody = B, Error = E, Future: Send> + Send + Clone + 'static,
         B::Data: Send + 'static,
