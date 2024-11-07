@@ -33,7 +33,7 @@ pub use default_client::DefaultClient;
 
 #[derive(Clone)]
 /// The main struct to run proxy server
-pub struct MitmProxy<C> {
+struct MitmProxyInner<C> {
     /// Root certificate to sign fake certificates. You may need to trust this certificate on client application to use HTTPS.
     ///
     /// If None, proxy will just tunnel HTTPS traffic and will not observe HTTPS traffic.
@@ -45,12 +45,27 @@ pub struct MitmProxy<C> {
     pub cert_cache: Option<Cache<String, CertifiedKeyDer>>,
 }
 
+/// The main struct to run proxy server
+pub struct MitmProxy<C> {
+    inner: Arc<MitmProxyInner<C>>,
+}
+
+impl<C> Clone for MitmProxy<C> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+        }
+    }
+}
+
 impl<C> MitmProxy<C> {
     /// Create a new MitmProxy
     pub fn new(root_cert: Option<C>, cache: Option<Cache<String, CertifiedKeyDer>>) -> Self {
         Self {
-            root_cert,
-            cert_cache: cache,
+            inner: Arc::new(MitmProxyInner {
+                root_cert,
+                cert_cache: cache,
+            }),
         }
     }
 }
@@ -77,7 +92,7 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
     {
         let listener = TcpListener::bind(addr).await?;
 
-        let proxy = Arc::new(self);
+        let proxy = self;
 
         Ok(async move {
             loop {
@@ -87,15 +102,14 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
 
                 let service = service.clone();
 
-                let proxy = proxy.clone();
+                let proxy = Self {
+                    inner: proxy.inner.clone(),
+                };
                 tokio::spawn(async move {
                     if let Err(err) = server::conn::http1::Builder::new()
                         .preserve_header_case(true)
                         .title_case_headers(true)
-                        .serve_connection(
-                            TokioIo::new(stream),
-                            Self::wrap_service(proxy.clone(), service.clone()),
-                        )
+                        .serve_connection(TokioIo::new(stream), proxy.wrap_service(service.clone()))
                         .with_upgrades()
                         .await
                     {
@@ -112,7 +126,7 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
     /// If you want to serve simple HTTP proxy server, you can use `bind` method instead.
     /// `bind` will call this method internally.
     pub fn wrap_service<S, B, E, E2>(
-        proxy: Arc<Self>,
+        &self,
         service: S,
     ) -> impl HttpService<Incoming, ResBody = BoxBody<Bytes, E>, Error = E2, Future: Send>
     where
@@ -121,9 +135,10 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
         E: std::error::Error + Send + Sync + 'static,
         E2: std::error::Error + Send + Sync + 'static,
     {
+        let proxy = self.clone();
         service_fn(move |req| {
-            let proxy = proxy.clone();
             let mut service = service.clone();
+            let proxy = proxy.clone();
 
             async move {
                 if req.method() == Method::CONNECT {
@@ -226,8 +241,8 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
     }
 
     fn get_certified_key(&self, host: String) -> Option<CertifiedKeyDer> {
-        self.root_cert.as_ref().map(|root_cert| {
-            if let Some(cache) = self.cert_cache.as_ref() {
+        self.inner.root_cert.as_ref().map(|root_cert| {
+            if let Some(cache) = self.inner.cert_cache.as_ref() {
                 cache.get_with(host.clone(), move || {
                     generate_cert(host, root_cert.borrow())
                 })
@@ -308,7 +323,7 @@ where
 }
 
 pub struct MitmProxyLayer<C, S> {
-    pub proxy: Arc<MitmProxy<C>>,
+    pub proxy: MitmProxy<C>,
     pub service: S,
 }
 
