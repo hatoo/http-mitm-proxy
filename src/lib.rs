@@ -19,7 +19,7 @@ use std::{
 };
 use tls::{generate_cert, CertifiedKeyDer};
 use tokio::net::{TcpListener, TcpStream, ToSocketAddrs};
-use tower::Service;
+use tower::{Layer, Service};
 
 pub use futures;
 pub use hyper;
@@ -285,6 +285,26 @@ fn inject_authority<B>(request_middleman: &mut Request<B>, authority: hyper::htt
         parts.authority = Some(authority);
     }
     *request_middleman.uri_mut() = hyper::http::uri::Uri::from_parts(parts).unwrap();
+}
+
+impl<C, S> Layer<S> for MitmProxy<C>
+where
+    C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static,
+    S: HttpService<Incoming> + Send + Clone + 'static,
+    S::Future: Send + 'static,
+    S::ResBody: Send + Sync + 'static,
+    <S::ResBody as Body>::Data: Send + Sync + 'static,
+    <S::ResBody as Body>::Error: Into<Box<dyn std::error::Error + Send + Sync + 'static>>,
+    S::Error: Into<Box<dyn std::error::Error + Send + Sync + 'static>>,
+{
+    type Service = MitmProxyLayer<C, S>;
+
+    fn layer(&self, service: S) -> MitmProxyLayer<C, S> {
+        MitmProxyLayer {
+            proxy: self.clone(),
+            service,
+        }
+    }
 }
 
 pub struct MitmProxyLayer<C, S> {
