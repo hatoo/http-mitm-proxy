@@ -1,18 +1,27 @@
 #![doc = include_str!("../README.md")]
 
 use bytes::Bytes;
+use futures::future::BoxFuture;
 use http_body_util::{combinators::BoxBody, BodyExt, Empty};
 use hyper::{
     body::{Body, Incoming},
     server,
-    service::{service_fn, HttpService},
+    service::{self, service_fn, HttpService},
     Method, Request, Response, StatusCode,
 };
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use moka::sync::Cache;
-use std::{borrow::Borrow, future::Future, sync::Arc};
+use std::{
+    borrow::Borrow,
+    error::Error,
+    future::Future,
+    pin::Pin,
+    sync::Arc,
+    task::{Context, Poll},
+};
 use tls::{generate_cert, CertifiedKeyDer};
 use tokio::net::{TcpListener, TcpStream, ToSocketAddrs};
+use tower::Service;
 
 pub use futures;
 pub use hyper;
@@ -265,6 +274,12 @@ fn no_body<E>(status: StatusCode) -> Response<BoxBody<Bytes, E>> {
     res
 }
 
+fn no_body2<D>(status: StatusCode) -> Response<Empty<D>> {
+    let mut res = Response::new(Empty::new());
+    *res.status_mut() = status;
+    res
+}
+
 fn inject_authority<B>(request_middleman: &mut Request<B>, authority: hyper::http::uri::Authority) {
     let mut parts = request_middleman.uri().clone().into_parts();
     parts.scheme = Some(hyper::http::uri::Scheme::HTTPS);
@@ -272,4 +287,129 @@ fn inject_authority<B>(request_middleman: &mut Request<B>, authority: hyper::htt
         parts.authority = Some(authority);
     }
     *request_middleman.uri_mut() = hyper::http::uri::Uri::from_parts(parts).unwrap();
+}
+
+pub struct MitmProxyLayer<C, S> {
+    pub proxy: Arc<MitmProxy<C>>,
+    pub service: S,
+}
+
+impl<C, S> Service<Request<Incoming>> for MitmProxyLayer<C, S>
+where
+    C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static,
+    S: HttpService<Incoming> + Send + Clone + 'static,
+    S::Future: Send + 'static,
+    S::ResBody: Send + Sync + 'static,
+    <S::ResBody as Body>::Data: Send + Sync + 'static,
+    <S::ResBody as Body>::Error: Into<Box<dyn std::error::Error + Send + Sync + 'static>>,
+    S::Error: Into<Box<dyn std::error::Error + Send + Sync + 'static>>,
+{
+    type Response = Response<BoxBody<<S::ResBody as Body>::Data, <S::ResBody as Body>::Error>>;
+    type Error = S::Error;
+    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>>>>;
+
+    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, req: Request<Incoming>) -> Self::Future {
+        let proxy = self.proxy.clone();
+        let mut service = self.service.clone();
+        let fut = async move {
+            if req.method() == Method::CONNECT {
+                // https
+                let Some(connect_authority) = req.uri().authority().cloned() else {
+                    tracing::error!(
+                        "Bad CONNECT request: {}, Reason: Invalid Authority",
+                        req.uri()
+                    );
+                    // return Ok(no_body2(StatusCode::BAD_REQUEST).map(|b| b.boxed()));
+                    unreachable!()
+                };
+
+                tokio::spawn(async move {
+                    let Ok(client) = hyper::upgrade::on(req).await else {
+                        tracing::error!(
+                            "Bad CONNECT request: {}, Reason: Invalid Upgrade",
+                            connect_authority
+                        );
+                        return;
+                    };
+                    if let Some(server_config) =
+                        proxy.server_config(connect_authority.host().to_string(), true)
+                    {
+                        let server_config = match server_config {
+                            Ok(server_config) => server_config,
+                            Err(err) => {
+                                tracing::error!(
+                                    "Failed to create server config for {}, {}",
+                                    connect_authority.host(),
+                                    err
+                                );
+                                return;
+                            }
+                        };
+                        let server_config = Arc::new(server_config);
+                        let tls_acceptor = tokio_rustls::TlsAcceptor::from(server_config);
+                        let client = match tls_acceptor.accept(TokioIo::new(client)).await {
+                            Ok(client) => client,
+                            Err(err) => {
+                                tracing::error!(
+                                    "Failed to accept TLS connection for {}, {}",
+                                    connect_authority.host(),
+                                    err
+                                );
+                                return;
+                            }
+                        };
+                        let f = move |mut req: Request<_>| {
+                            let connect_authority = connect_authority.clone();
+                            let mut service = service.clone();
+
+                            async move {
+                                inject_authority(&mut req, connect_authority.clone());
+                                service.call(req).await
+                            }
+                        };
+                        let res = if client.get_ref().1.alpn_protocol() == Some(b"h2") {
+                            server::conn::http2::Builder::new(TokioExecutor::new())
+                                .serve_connection(TokioIo::new(client), service_fn(f))
+                                .await
+                        } else {
+                            server::conn::http1::Builder::new()
+                                .preserve_header_case(true)
+                                .title_case_headers(true)
+                                .serve_connection(TokioIo::new(client), service_fn(f))
+                                .with_upgrades()
+                                .await
+                        };
+
+                        if let Err(_err) = res {
+                            // Suppress error because if we serving HTTPS proxy server and forward to HTTPS server, it will always error when closing connection.
+                            // tracing::error!("Error in proxy: {}", err);
+                        }
+                    } else {
+                        let Ok(mut server) = TcpStream::connect(connect_authority.as_str()).await
+                        else {
+                            tracing::error!("Failed to connect to {}", connect_authority);
+                            return;
+                        };
+                        let _ =
+                            tokio::io::copy_bidirectional(&mut TokioIo::new(client), &mut server)
+                                .await;
+                    }
+                });
+
+                Ok(Response::new(
+                    http_body_util::Empty::new()
+                        .map_err(|e| unreachable!())
+                        .boxed(),
+                ))
+            } else {
+                // http
+                service.call(req).await.map(|res| res.map(|b| b.boxed()))
+            }
+        };
+        Box::pin(fut)
+    }
 }

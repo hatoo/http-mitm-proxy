@@ -744,6 +744,7 @@ dependencies = [
  "tokio",
  "tokio-native-tls",
  "tokio-rustls",
+ "tower",
  "tracing",
  "tracing-subscriber",
  "winnow",
