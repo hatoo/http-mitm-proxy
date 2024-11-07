@@ -1,6 +1,5 @@
 #![doc = include_str!("../README.md")]
 
-use bytes::Bytes;
 use http_body_util::{combinators::BoxBody, BodyExt, Empty};
 use hyper::{
     body::{Body, Incoming},
@@ -53,20 +52,17 @@ impl<C> MitmProxy<C> {
 impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
     /// Bind to a socket address and return a future that runs the proxy server.
     /// URL for requests that passed to service are full URL including scheme.
-    pub async fn bind<A: ToSocketAddrs, S, B, E, E2>(
+    pub async fn bind<A: ToSocketAddrs, S, B, E>(
         self,
         addr: A,
         service: S,
     ) -> Result<impl Future<Output = ()>, std::io::Error>
     where
-        B: Body<Data = Bytes, Error = E> + Send + Sync + 'static,
+        S: HttpService<Incoming, ResBody = B, Error = E, Future: Send> + Send + Clone + 'static,
+        B::Data: Send + 'static,
+        B: Body + Send + Sync + 'static,
+        B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
         E: std::error::Error + Send + Sync + 'static,
-        E2: std::error::Error + Send + Sync + 'static,
-        S: HttpService<Incoming, ResBody = B, Error = E2, Future: Send>
-            + Send
-            + Sync
-            + Clone
-            + 'static,
     {
         let listener = TcpListener::bind(addr).await?;
 
@@ -104,15 +100,16 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
     /// See `examples/https.rs` for usage.
     /// If you want to serve simple HTTP proxy server, you can use `bind` method instead.
     /// `bind` will call this method internally.
-    pub fn wrap_service<S, B, E, E2>(
+    pub fn wrap_service<S, B, E>(
         proxy: Arc<Self>,
         service: S,
-    ) -> impl HttpService<Incoming, ResBody = BoxBody<Bytes, E>, Error = E2, Future: Send>
+    ) -> impl HttpService<Incoming, ResBody = BoxBody<B::Data, B::Error>, Future: Send>
     where
-        S: HttpService<Incoming, ResBody = B, Error = E2, Future: Send> + Send + Clone + 'static,
-        B: Body<Data = Bytes, Error = E> + Send + Sync + 'static,
+        S: HttpService<Incoming, ResBody = B, Error = E, Future: Send> + Send + Clone + 'static,
+        B::Data: Send + 'static,
+        B: Body + Send + Sync + 'static,
+        B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
         E: std::error::Error + Send + Sync + 'static,
-        E2: std::error::Error + Send + Sync + 'static,
     {
         service_fn(move |req| {
             let proxy = proxy.clone();
@@ -126,7 +123,8 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
                             "Bad CONNECT request: {}, Reason: Invalid Authority",
                             req.uri()
                         );
-                        return Ok(no_body(StatusCode::BAD_REQUEST));
+                        return Ok(no_body(StatusCode::BAD_REQUEST)
+                            .map(|b| b.boxed().map_err(|never| match never {}).boxed()));
                     };
 
                     tokio::spawn(async move {
@@ -259,8 +257,8 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
     }
 }
 
-fn no_body<E>(status: StatusCode) -> Response<BoxBody<Bytes, E>> {
-    let mut res = Response::new(Empty::new().map_err(|never| match never {}).boxed());
+fn no_body<D>(status: StatusCode) -> Response<Empty<D>> {
+    let mut res = Response::new(Empty::new());
     *res.status_mut() = status;
     res
 }
