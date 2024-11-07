@@ -1,19 +1,17 @@
 #![doc = include_str!("../README.md")]
 
 use bytes::Bytes;
-use futures::future::BoxFuture;
 use http_body_util::{combinators::BoxBody, BodyExt, Empty};
 use hyper::{
     body::{Body, Incoming},
     server,
-    service::{self, service_fn, HttpService},
+    service::{service_fn, HttpService},
     Method, Request, Response, StatusCode,
 };
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use moka::sync::Cache;
 use std::{
     borrow::Borrow,
-    error::Error,
     future::Future,
     pin::Pin,
     sync::Arc,
@@ -308,7 +306,7 @@ where
     type Error = S::Error;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>>>>;
 
-    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+    fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         Poll::Ready(Ok(()))
     }
 
