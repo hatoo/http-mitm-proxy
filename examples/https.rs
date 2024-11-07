@@ -100,7 +100,7 @@ async fn main() {
 
     let server = async move {
         loop {
-            let (stream, client_addr) = listener.accept().await.unwrap();
+            let (stream, _client_addr) = listener.accept().await.unwrap();
             let proxy = proxy.clone();
             let client = client.clone();
             let tls_acceptor = tls_acceptor.clone();
@@ -111,9 +111,8 @@ async fn main() {
 
                     MitmProxy::hyper_service(
                         proxy.clone(),
-                        client_addr,
                         req,
-                        move |_client_addr, req| {
+                        service_fn(move |req| {
                             let client = client.clone();
                             async move {
                                 let uri = req.uri().clone();
@@ -129,7 +128,7 @@ async fn main() {
 
                                 Ok::<_, http_mitm_proxy::default_client::Error>(res)
                             }
-                        },
+                        }),
                     )
                 });
 

@@ -5,7 +5,7 @@ use bytes::Bytes;
 use clap::{Args, Parser};
 use http_body_util::{BodyExt, Full};
 use http_mitm_proxy::{DefaultClient, MitmProxy};
-use hyper::Response;
+use hyper::{service::service_fn, Response};
 use moka::sync::Cache;
 
 #[derive(Parser)]
@@ -82,50 +82,53 @@ async fn main() {
 
     let client = DefaultClient::new().unwrap();
     let proxy = proxy
-        .bind(("127.0.0.1", 3003), move |_client_addr, mut req| {
-            let client = client.clone();
-            async move {
-                // Forward connection from http/https dev.example to http://127.0.0.1:3333
-                if req.uri().host() == Some("dev.example") {
-                    // Return a response created by the proxy
-                    if req.uri().path() == "/test.json" {
-                        let res = Response::builder()
-                            .header(hyper::header::CONTENT_TYPE, "application/json")
-                            .body(
-                                Full::new(Bytes::from("{data: 123}"))
-                                    .map_err(|e| match e {})
-                                    .boxed(),
-                            )
-                            .unwrap();
-                        return Ok(res);
+        .bind(
+            ("127.0.0.1", 3003),
+            service_fn(move |mut req| {
+                let client = client.clone();
+                async move {
+                    // Forward connection from http/https dev.example to http://127.0.0.1:3333
+                    if req.uri().host() == Some("dev.example") {
+                        // Return a response created by the proxy
+                        if req.uri().path() == "/test.json" {
+                            let res = Response::builder()
+                                .header(hyper::header::CONTENT_TYPE, "application/json")
+                                .body(
+                                    Full::new(Bytes::from("{data: 123}"))
+                                        .map_err(|e| match e {})
+                                        .boxed(),
+                                )
+                                .unwrap();
+                            return Ok(res);
+                        }
+
+                        req.headers_mut().insert(
+                            hyper::header::HOST,
+                            hyper::header::HeaderValue::from_maybe_shared(format!(
+                                "127.0.0.1:{}",
+                                port
+                            ))
+                            .unwrap(),
+                        );
+
+                        let mut parts = req.uri().clone().into_parts();
+                        parts.scheme = Some(hyper::http::uri::Scheme::HTTP);
+                        parts.authority = Some(
+                            hyper::http::uri::Authority::from_maybe_shared(format!(
+                                "127.0.0.1:{}",
+                                port
+                            ))
+                            .unwrap(),
+                        );
+                        *req.uri_mut() = hyper::Uri::from_parts(parts).unwrap();
                     }
 
-                    req.headers_mut().insert(
-                        hyper::header::HOST,
-                        hyper::header::HeaderValue::from_maybe_shared(format!(
-                            "127.0.0.1:{}",
-                            port
-                        ))
-                        .unwrap(),
-                    );
+                    let (res, _upgrade) = client.send_request(req).await?;
 
-                    let mut parts = req.uri().clone().into_parts();
-                    parts.scheme = Some(hyper::http::uri::Scheme::HTTP);
-                    parts.authority = Some(
-                        hyper::http::uri::Authority::from_maybe_shared(format!(
-                            "127.0.0.1:{}",
-                            port
-                        ))
-                        .unwrap(),
-                    );
-                    *req.uri_mut() = hyper::Uri::from_parts(parts).unwrap();
+                    Ok::<_, http_mitm_proxy::default_client::Error>(res.map(|b| b.boxed()))
                 }
-
-                let (res, _upgrade) = client.send_request(req).await?;
-
-                Ok::<_, http_mitm_proxy::default_client::Error>(res.map(|b| b.boxed()))
-            }
-        })
+            }),
+        )
         .await
         .unwrap();
 

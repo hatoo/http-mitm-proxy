@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use clap::{Args, Parser};
 use http_mitm_proxy::{DefaultClient, MitmProxy};
+use hyper::service::service_fn;
 use moka::sync::Cache;
 use tracing_subscriber::EnvFilter;
 
@@ -75,23 +76,26 @@ async fn main() {
 
     let client = DefaultClient::new().unwrap();
     let server = proxy
-        .bind(("127.0.0.1", 3003), move |_client_addr, req| {
-            let client = client.clone();
-            async move {
-                let uri = req.uri().clone();
+        .bind(
+            ("127.0.0.1", 3003),
+            service_fn(move |req| {
+                let client = client.clone();
+                async move {
+                    let uri = req.uri().clone();
 
-                // You can modify request here
-                // or You can just return response anywhere
+                    // You can modify request here
+                    // or You can just return response anywhere
 
-                let (res, _upgrade) = client.send_request(req).await?;
+                    let (res, _upgrade) = client.send_request(req).await?;
 
-                println!("{} -> {}", uri, res.status());
+                    println!("{} -> {}", uri, res.status());
 
-                // You can modify response here
+                    // You can modify response here
 
-                Ok::<_, http_mitm_proxy::default_client::Error>(res)
-            }
-        })
+                    Ok::<_, http_mitm_proxy::default_client::Error>(res)
+                }
+            }),
+        )
         .await
         .unwrap();
 

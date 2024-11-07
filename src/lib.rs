@@ -5,12 +5,12 @@ use http_body_util::{combinators::BoxBody, BodyExt, Empty};
 use hyper::{
     body::{Body, Incoming},
     server,
-    service::service_fn,
+    service::{service_fn, HttpService},
     Method, Request, Response, StatusCode,
 };
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use moka::sync::Cache;
-use std::{borrow::Borrow, future::Future, net::SocketAddr, sync::Arc};
+use std::{borrow::Borrow, future::Future, sync::Arc};
 use tls::{generate_cert, CertifiedKeyDer};
 use tokio::net::{TcpListener, TcpStream, ToSocketAddrs};
 
@@ -53,7 +53,7 @@ impl<C> MitmProxy<C> {
 impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
     /// Bind to a socket address and return a future that runs the proxy server.
     /// URL for requests that passed to service are full URL including scheme.
-    pub async fn bind<A: ToSocketAddrs, S, B, E, E2, F>(
+    pub async fn bind<A: ToSocketAddrs, S, B, E, E2>(
         self,
         addr: A,
         service: S,
@@ -62,8 +62,11 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
         B: Body<Data = Bytes, Error = E> + Send + Sync + 'static,
         E: std::error::Error + Send + Sync + 'static,
         E2: std::error::Error + Send + Sync + 'static,
-        S: Fn(SocketAddr, Request<Incoming>) -> F + Send + Sync + Clone + 'static,
-        F: Future<Output = Result<Response<B>, E2>> + Send,
+        S: HttpService<Incoming, ResBody = B, Error = E2, Future: Send>
+            + Send
+            + Sync
+            + Clone
+            + 'static,
     {
         let listener = TcpListener::bind(addr).await?;
 
@@ -71,7 +74,7 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
 
         Ok(async move {
             loop {
-                let Ok((stream, client_addr)) = listener.accept().await else {
+                let Ok((stream, _)) = listener.accept().await else {
                     continue;
                 };
 
@@ -85,12 +88,7 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
                         .serve_connection(
                             TokioIo::new(stream),
                             service_fn(|req| {
-                                Self::hyper_service(
-                                    proxy.clone(),
-                                    client_addr,
-                                    req,
-                                    service.clone(),
-                                )
+                                Self::hyper_service(proxy.clone(), req, service.clone())
                             }),
                         )
                         .with_upgrades()
@@ -107,15 +105,17 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
     /// See `examples/https.rs` for usage.
     /// If you want to serve simple HTTP proxy server, you can use `bind` method instead.
     /// `bind` will call this method internally.
-    pub async fn hyper_service<S, B, E, E2, F>(
+    pub async fn hyper_service<S, B, E, E2>(
         proxy: Arc<Self>,
-        client_addr: SocketAddr,
         req: Request<Incoming>,
-        service: S,
+        mut service: S,
     ) -> Result<Response<BoxBody<Bytes, E>>, E2>
     where
-        S: Fn(SocketAddr, Request<Incoming>) -> F + Send + Clone + 'static,
-        F: Future<Output = Result<Response<B>, E2>> + Send,
+        S: HttpService<Incoming, ResBody = B, Error = E2, Future: Send>
+            + Send
+            + Sync
+            + Clone
+            + 'static,
         B: Body<Data = Bytes, Error = E> + Send + Sync + 'static,
         E: std::error::Error + Send + Sync + 'static,
         E2: std::error::Error + Send + Sync + 'static,
@@ -167,11 +167,11 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
                     };
                     let f = move |mut req: Request<_>| {
                         let connect_authority = connect_authority.clone();
-                        let service = service.clone();
+                        let mut service = service.clone();
 
                         async move {
                             inject_authority(&mut req, connect_authority.clone());
-                            service(client_addr, req).await
+                            service.call(req).await
                         }
                     };
                     let res = if client.get_ref().1.alpn_protocol() == Some(b"h2") {
@@ -209,9 +209,7 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
             ))
         } else {
             // http
-            service(client_addr, req)
-                .await
-                .map(|res| res.map(|b| b.boxed()))
+            service.call(req).await.map(|res| res.map(|b| b.boxed()))
         }
     }
 
