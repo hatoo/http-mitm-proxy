@@ -63,8 +63,8 @@ where
     where
         S: HttpService<Incoming> + Clone + Send + 'static,
         S::Error: Into<Box<dyn StdError + Send + Sync>>,
-        <S::ResBody as Body>::Data: Send,
         S::ResBody: Send + Sync + 'static,
+        <S::ResBody as Body>::Data: Send,
         <S::ResBody as Body>::Error: Into<Box<dyn StdError + Send + Sync>>,
         S::Future: Send,
     {
@@ -115,8 +115,8 @@ where
     where
         S: HttpService<Incoming> + Clone + Send + 'static,
         S::Error: Into<Box<dyn StdError + Send + Sync>>,
-        <S::ResBody as Body>::Data: Send,
         S::ResBody: Send + Sync + 'static,
+        <S::ResBody as Body>::Data: Send,
         <S::ResBody as Body>::Error: Into<Box<dyn StdError + Send + Sync>>,
         S::Future: Send,
     {
