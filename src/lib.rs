@@ -9,7 +9,7 @@ use hyper::{
 };
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use moka::sync::Cache;
-use std::{borrow::Borrow, future::Future, sync::Arc};
+use std::{borrow::Borrow, error::Error as StdError, future::Future, sync::Arc};
 use tls::{generate_cert, CertifiedKeyDer};
 use tokio::net::{TcpListener, TcpStream, ToSocketAddrs};
 
@@ -52,17 +52,18 @@ impl<C> MitmProxy<C> {
 impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
     /// Bind to a socket address and return a future that runs the proxy server.
     /// URL for requests that passed to service are full URL including scheme.
-    pub async fn bind<A: ToSocketAddrs, S, B, E>(
+    pub async fn bind<A: ToSocketAddrs, S>(
         self,
         addr: A,
         service: S,
     ) -> Result<impl Future<Output = ()>, std::io::Error>
     where
-        S: HttpService<Incoming, ResBody = B, Error = E, Future: Send> + Send + Clone + 'static,
-        B::Data: Send + 'static,
-        B: Body + Send + Sync + 'static,
-        B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
-        E: std::error::Error + Send + Sync + 'static,
+        S: HttpService<Incoming> + Clone + Send + 'static,
+        S::Error: Into<Box<dyn StdError + Send + Sync>>,
+        <S::ResBody as Body>::Data: Send,
+        S::ResBody: Send + Sync + 'static,
+        <S::ResBody as Body>::Error: Into<Box<dyn StdError + Send + Sync>>,
+        S::Future: Send,
     {
         let listener = TcpListener::bind(addr).await?;
 
@@ -100,16 +101,21 @@ impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
     /// See `examples/https.rs` for usage.
     /// If you want to serve simple HTTP proxy server, you can use `bind` method instead.
     /// `bind` will call this method internally.
-    pub fn wrap_service<S, B, E>(
+    pub fn wrap_service<S>(
         proxy: Arc<Self>,
         service: S,
-    ) -> impl HttpService<Incoming, ResBody = BoxBody<B::Data, B::Error>, Future: Send>
+    ) -> impl HttpService<
+        Incoming,
+        ResBody = BoxBody<<S::ResBody as Body>::Data, <S::ResBody as Body>::Error>,
+        Future: Send,
+    >
     where
-        S: HttpService<Incoming, ResBody = B, Error = E, Future: Send> + Send + Clone + 'static,
-        B::Data: Send + 'static,
-        B: Body + Send + Sync + 'static,
-        B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
-        E: std::error::Error + Send + Sync + 'static,
+        S: HttpService<Incoming> + Clone + Send + 'static,
+        S::Error: Into<Box<dyn StdError + Send + Sync>>,
+        <S::ResBody as Body>::Data: Send,
+        S::ResBody: Send + Sync + 'static,
+        <S::ResBody as Body>::Error: Into<Box<dyn StdError + Send + Sync>>,
+        S::Future: Send,
     {
         service_fn(move |req| {
             let proxy = proxy.clone();
