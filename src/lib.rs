@@ -49,7 +49,10 @@ impl<C> MitmProxy<C> {
 
 // pub type Handler<B, E> = Fn(Request<Incoming>) -> Result<Response<B>, E>;
 
-impl<C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static> MitmProxy<C> {
+impl<C> MitmProxy<C>
+where
+    C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static,
+{
     /// Bind to a socket address and return a future that runs the proxy server.
     /// URL for requests that passed to service are full URL including scheme.
     pub async fn bind<A: ToSocketAddrs, S>(
