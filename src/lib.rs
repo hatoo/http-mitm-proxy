@@ -47,8 +47,6 @@ impl<C> MitmProxy<C> {
     }
 }
 
-// pub type Handler<B, E> = Fn(Request<Incoming>) -> Result<Response<B>, E>;
-
 impl<C> MitmProxy<C>
 where
     C: Borrow<rcgen::CertifiedKey> + Send + Sync + 'static,
