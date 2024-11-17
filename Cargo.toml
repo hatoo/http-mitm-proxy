@@ -36,6 +36,7 @@ native-tls = { version = "0.2.12", features = ["alpn"] }
 thiserror = "2.0.2"
 moka = { version = "0.12.8", features = ["sync"] }
 winnow = { version = "0.6.20", optional = true }
+reqwest = "0.12.7"
 
 [dev-dependencies]
 axum = { version = "0.7.2", features = ["http2"] }
