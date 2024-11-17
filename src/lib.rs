@@ -19,8 +19,6 @@ pub use moka;
 pub use tokio_native_tls;
 
 pub mod default_client;
-#[cfg(feature = "reqwest")]
-pub mod reqwest_client;
 mod tls;
 
 pub use default_client::DefaultClient;

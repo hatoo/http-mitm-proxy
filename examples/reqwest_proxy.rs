@@ -1,8 +1,10 @@
+/// This example demonstrates how to use `http-mitm-proxy` with `reqwest`.
 use std::path::PathBuf;
 
+use bytes::Bytes;
 use clap::{Args, Parser};
 use http_mitm_proxy::MitmProxy;
-use hyper::service::service_fn;
+use hyper::{body::Body, service::service_fn};
 use moka::sync::Cache;
 use tracing_subscriber::EnvFilter;
 
@@ -86,14 +88,14 @@ async fn main() {
                     // You can modify request here
                     // or You can just return response anywhere
 
-                    let req = http_mitm_proxy::reqwest_client::to_reqwest(req);
+                    let req = to_reqwest(req);
                     let res = client.execute(req).await?;
 
                     println!("{} -> {}", uri, res.status());
 
                     // You can modify response here
 
-                    Ok::<_, reqwest::Error>(http_mitm_proxy::reqwest_client::from_reqwest(res))
+                    Ok::<_, reqwest::Error>(from_reqwest(res))
                 }
             }),
         )
@@ -117,4 +119,32 @@ async fn main() {
     println!("{}", root_cert_key);
 
     server.await;
+}
+
+fn to_reqwest<T>(req: hyper::Request<T>) -> reqwest::Request
+where
+    T: Body + Send + Sync + 'static,
+    T::Data: Into<Bytes>,
+    T::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+{
+    let (parts, body) = req.into_parts();
+    let url = reqwest::Url::parse(&parts.uri.to_string()).unwrap();
+    let mut req = reqwest::Request::new(parts.method, url);
+    *req.headers_mut() = parts.headers;
+    req.body_mut().replace(reqwest::Body::wrap(body));
+    *req.version_mut() = parts.version;
+
+    req
+}
+
+fn from_reqwest(res: reqwest::Response) -> hyper::Response<reqwest::Body> {
+    let mut hres = hyper::Response::builder()
+        .status(res.status())
+        .version(res.version());
+
+    *hres.headers_mut().unwrap() = res.headers().clone();
+
+    let body = reqwest::Body::from(res);
+
+    hres.body(body).unwrap()
 }
