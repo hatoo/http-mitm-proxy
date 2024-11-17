@@ -10,8 +10,12 @@ authors = ["hatoo <hato2000@gmail.com>"]
 license = "MIT"
 categories = ["network-programming", "web-programming::http-server"]
 keywords = ["http", "proxy", "http-proxy"]
+resolver = "2"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[features]
+reqwest = ["dep:reqwest"]
 
 [dependencies]
 tokio = { version = "1.39.3", features = [
@@ -35,8 +39,7 @@ hyper-util = { version = "0.1.7", features = ["tokio"] }
 native-tls = { version = "0.2.12", features = ["alpn"] }
 thiserror = "2.0.2"
 moka = { version = "0.12.8", features = ["sync"] }
-winnow = { version = "0.6.20", optional = true }
-reqwest = "0.12.7"
+reqwest = { version = "0.12.7", optional = true }
 
 [dev-dependencies]
 axum = { version = "0.7.2", features = ["http2"] }
@@ -47,4 +50,5 @@ tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 winnow = "0.6.20"
 
 [[example]]
-name = "websocket"
+name = "reqwest_proxy"
+required-features = ["reqwest"]
