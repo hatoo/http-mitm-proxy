@@ -34,7 +34,7 @@ tokio-native-tls = "0.3.1"
 tracing = "0.1.40"
 hyper-util = { version = "0.1.7", features = ["tokio"] }
 native-tls = { version = "0.2.12", features = ["alpn"] }
-thiserror = "2.0.2"
+thiserror = "2.0.3"
 moka = { version = "0.12.8", features = ["sync"] }
 
 [dev-dependencies]
