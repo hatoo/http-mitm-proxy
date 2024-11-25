@@ -6,7 +6,7 @@ pub struct CertifiedKeyDer {
 }
 
 pub fn generate_cert(host: String, root_cert: &rcgen::CertifiedKey) -> CertifiedKeyDer {
-    let mut cert_params = rcgen::CertificateParams::new(vec![host]).unwrap();
+    let mut cert_params = rcgen::CertificateParams::new(vec![host.clone()]).unwrap();
     cert_params
         .key_usages
         .push(rcgen::KeyUsagePurpose::DigitalSignature);
@@ -16,6 +16,11 @@ pub fn generate_cert(host: String, root_cert: &rcgen::CertifiedKey) -> Certified
     cert_params
         .extended_key_usages
         .push(rcgen::ExtendedKeyUsagePurpose::ClientAuth);
+    cert_params.distinguished_name = {
+        let mut dn = rcgen::DistinguishedName::new();
+        dn.push(rcgen::DnType::CommonName, host);
+        dn
+    };
 
     let key_pair = rcgen::KeyPair::generate().unwrap();
 
