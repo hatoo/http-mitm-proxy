@@ -3,7 +3,7 @@ use std::{path::PathBuf, sync::Arc};
 use clap::{Args, Parser};
 use http_mitm_proxy::{DefaultClient, MitmProxy};
 use hyper::service::service_fn;
-use hyper_util::rt::TokioIo;
+use hyper_util::rt::{TokioExecutor, TokioIo};
 use moka::sync::Cache;
 use rustls::{pki_types::PrivatePkcs8KeyDer, ServerConfig};
 use tokio::net::TcpListener;
@@ -83,7 +83,7 @@ async fn main() {
             )),
         )
         .unwrap();
-    server_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec(), b"http/1.0".to_vec()];
+    server_config.alpn_protocols = vec![b"h2".to_vec()];
 
     let proxy = MitmProxy::new(
         // This is the root cert that will be used to sign the fake certificates
@@ -129,11 +129,8 @@ async fn main() {
                 );
 
                 let stream = tls_acceptor.accept(stream).await.unwrap();
-                hyper::server::conn::http1::Builder::new()
-                    .preserve_header_case(true)
-                    .title_case_headers(true)
+                hyper::server::conn::http2::Builder::new(TokioExecutor::new())
                     .serve_connection(TokioIo::new(stream), service)
-                    .with_upgrades()
                     .await
                     .unwrap();
             });
