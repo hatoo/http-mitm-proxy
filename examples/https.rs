@@ -3,7 +3,7 @@ use std::{path::PathBuf, sync::Arc};
 use clap::{Args, Parser};
 use http_mitm_proxy::{DefaultClient, MitmProxy};
 use hyper::service::service_fn;
-use hyper_util::rt::TokioIo;
+use hyper_util::rt::{TokioExecutor, TokioIo};
 use moka::sync::Cache;
 use rustls::{pki_types::PrivatePkcs8KeyDer, ServerConfig};
 use tokio::net::TcpListener;
@@ -129,13 +129,23 @@ async fn main() {
                 );
 
                 let stream = tls_acceptor.accept(stream).await.unwrap();
-                hyper::server::conn::http1::Builder::new()
-                    .preserve_header_case(true)
-                    .title_case_headers(true)
-                    .serve_connection(TokioIo::new(stream), service)
-                    .with_upgrades()
-                    .await
-                    .unwrap();
+
+                if stream.get_ref().1.alpn_protocol() == Some(b"h2") {
+                    // HTTP/2
+                    hyper::server::conn::http2::Builder::new(TokioExecutor::new())
+                        .serve_connection(TokioIo::new(stream), service)
+                        .await
+                        .unwrap();
+                } else {
+                    // HTTP/1.1
+                    hyper::server::conn::http1::Builder::new()
+                        .preserve_header_case(true)
+                        .title_case_headers(true)
+                        .serve_connection(TokioIo::new(stream), service)
+                        .with_upgrades()
+                        .await
+                        .unwrap();
+                }
             });
         }
     };
