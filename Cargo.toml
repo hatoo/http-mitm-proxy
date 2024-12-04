@@ -44,3 +44,6 @@ rcgen = { version = "0.13.1", features = ["x509-parser"] }
 reqwest = { version = "0.12.7", features = ["native-tls-alpn"] }
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 winnow = "0.6.20"
+
+[patch.crates-io]
+tokio-rustls = { git = "https://github.com/rustls/tokio-rustls.git", branch = "write-zero" }
