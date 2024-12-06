@@ -29,7 +29,7 @@ bytes = "1.7.1"
 http-body-util = "0.1.0"
 rcgen = "0.13.1"
 rustls = "0.23.18"
-tokio-rustls = "0.26.0"
+tokio-rustls = "0.26.1"
 tokio-native-tls = "0.3.1"
 tracing = "0.1.40"
 hyper-util = { version = "0.1.7", features = ["tokio"] }
