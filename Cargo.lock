@@ -732,7 +732,6 @@ dependencies = [
  "native-tls",
  "rcgen",
  "reqwest",
- "rustls",
  "thiserror 2.0.4",
  "tokio",
  "tokio-native-tls",

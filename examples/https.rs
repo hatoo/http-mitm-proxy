@@ -5,9 +5,11 @@ use http_mitm_proxy::{DefaultClient, MitmProxy};
 use hyper::service::service_fn;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use moka::sync::Cache;
-use rustls::{pki_types::PrivatePkcs8KeyDer, ServerConfig};
 use tokio::net::TcpListener;
-use tokio_rustls::TlsAcceptor;
+use tokio_rustls::{
+    rustls::{self, pki_types::PrivatePkcs8KeyDer, ServerConfig},
+    TlsAcceptor,
+};
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
