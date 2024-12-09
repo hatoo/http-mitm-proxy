@@ -12,6 +12,7 @@ use moka::sync::Cache;
 use std::{borrow::Borrow, error::Error as StdError, future::Future, sync::Arc};
 use tls::{generate_cert, CertifiedKeyDer};
 use tokio::net::{TcpListener, TcpStream, ToSocketAddrs};
+use tokio_rustls::rustls;
 
 pub use futures;
 pub use hyper;
