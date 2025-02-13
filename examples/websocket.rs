@@ -233,7 +233,7 @@ pub mod websocket {
         pub payload_data: Vec<u8>,
     }
 
-    pub fn frame(input: &mut &[u8]) -> PResult<Frame> {
+    pub fn frame(input: &mut &[u8]) -> ModalResult<Frame> {
         let b0 = u8(input)?;
         let b1 = u8(input)?;
 
