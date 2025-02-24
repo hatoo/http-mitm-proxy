@@ -4,9 +4,11 @@ use axum::{routing::get, Router};
 use bytes::Bytes;
 use clap::{Args, Parser};
 use http_body_util::{BodyExt, Full};
-use http_mitm_proxy::{DefaultClient, MitmProxy};
-use hyper::{service::service_fn, Response};
-use moka::sync::Cache;
+use http_mitm_proxy::{
+    hyper::{service::service_fn, Response},
+    moka::sync::Cache,
+    DefaultClient, MitmProxy,
+};
 
 #[derive(Parser)]
 struct Opt {

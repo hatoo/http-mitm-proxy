@@ -1,9 +1,7 @@
 use std::path::PathBuf;
 
 use clap::{Args, Parser};
-use http_mitm_proxy::{DefaultClient, MitmProxy};
-use hyper::service::service_fn;
-use moka::sync::Cache;
+use http_mitm_proxy::{hyper::service::service_fn, moka::sync::Cache, DefaultClient, MitmProxy};
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
