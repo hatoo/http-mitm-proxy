@@ -1,9 +1,10 @@
 use std::path::PathBuf;
 
 use clap::{Args, Parser};
-use http_mitm_proxy::{default_client::Upgraded, DefaultClient, MitmProxy};
-use hyper::service::service_fn;
-use moka::sync::Cache;
+use http_mitm_proxy::{
+    default_client::Upgraded, hyper::service::service_fn, moka::sync::Cache, DefaultClient,
+    MitmProxy,
+};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tracing_subscriber::EnvFilter;
 use winnow::Parser as _;

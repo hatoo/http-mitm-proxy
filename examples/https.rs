@@ -1,10 +1,8 @@
 use std::{path::PathBuf, sync::Arc};
 
 use clap::{Args, Parser};
-use http_mitm_proxy::{DefaultClient, MitmProxy};
-use hyper::service::service_fn;
+use http_mitm_proxy::{hyper::service::service_fn, moka::sync::Cache, DefaultClient, MitmProxy};
 use hyper_util::rt::{TokioExecutor, TokioIo};
-use moka::sync::Cache;
 use tokio::net::TcpListener;
 use tokio_rustls::{
     rustls::{self, pki_types::PrivatePkcs8KeyDer, ServerConfig},
