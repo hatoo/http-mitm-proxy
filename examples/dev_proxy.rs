@@ -1,13 +1,13 @@
 use std::path::PathBuf;
 
-use axum::{routing::get, Router};
+use axum::{Router, routing::get};
 use bytes::Bytes;
 use clap::{Args, Parser};
 use http_body_util::{BodyExt, Full};
 use http_mitm_proxy::{
-    hyper::{service::service_fn, Response},
-    moka::sync::Cache,
     DefaultClient, MitmProxy,
+    hyper::{Response, service::service_fn},
+    moka::sync::Cache,
 };
 
 #[derive(Parser)]

@@ -4,7 +4,7 @@ version = "0.12.0"
 description = "A HTTP proxy server library intended to be a backend of application like Burp proxy."
 readme = "README.md"
 repository = "https://github.com/hatoo/http-mitm-proxy"
-edition = "2021"
+edition = "2024"
 
 authors = ["hatoo <hato2000@gmail.com>"]
 license = "MIT"

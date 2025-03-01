@@ -4,9 +4,9 @@ use std::path::PathBuf;
 use bytes::Bytes;
 use clap::{Args, Parser};
 use http_mitm_proxy::{
+    MitmProxy,
     hyper::{body::Body, service::service_fn},
     moka::sync::Cache,
-    MitmProxy,
 };
 use tracing_subscriber::EnvFilter;
 

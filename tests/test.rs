@@ -1,21 +1,21 @@
 use std::{
     convert::Infallible,
-    sync::{atomic::AtomicU16, Arc},
+    sync::{Arc, atomic::AtomicU16},
 };
 
 use axum::{
-    extract::Request,
-    response::{sse::Event, Sse},
-    routing::get,
     Router,
+    extract::Request,
+    response::{Sse, sse::Event},
+    routing::get,
 };
 use bytes::Bytes;
 use futures::stream;
 use http_mitm_proxy::{DefaultClient, MitmProxy};
 use hyper::{
-    body::{Body, Incoming},
-    service::{service_fn, HttpService},
     Uri,
+    body::{Body, Incoming},
+    service::{HttpService, service_fn},
 };
 use moka::sync::Cache;
 
