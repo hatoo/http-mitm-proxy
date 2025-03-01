@@ -1,16 +1,16 @@
 #![doc = include_str!("../README.md")]
 
-use http_body_util::{combinators::BoxBody, BodyExt, Empty};
+use http_body_util::{BodyExt, Empty, combinators::BoxBody};
 use hyper::{
+    Method, Request, Response, StatusCode,
     body::{Body, Incoming},
     server,
-    service::{service_fn, HttpService},
-    Method, Request, Response, StatusCode,
+    service::{HttpService, service_fn},
 };
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use moka::sync::Cache;
 use std::{borrow::Borrow, error::Error as StdError, future::Future, sync::Arc};
-use tls::{generate_cert, CertifiedKeyDer};
+use tls::{CertifiedKeyDer, generate_cert};
 use tokio::net::{TcpListener, TcpStream, ToSocketAddrs};
 use tokio_rustls::rustls;
 

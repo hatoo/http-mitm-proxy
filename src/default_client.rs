@@ -1,15 +1,18 @@
 use bytes::Bytes;
 use http_body_util::Empty;
 use hyper::{
+    Request, Response, StatusCode, Uri, Version,
     body::{Body, Incoming},
-    client, header, Request, Response, StatusCode, Uri, Version,
+    client, header,
 };
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use std::task::{Context, Poll};
 use tokio::{net::TcpStream, task::JoinHandle};
 
 #[cfg(all(feature = "native-tls-client", feature = "rustls-client"))]
-compile_error!("feature \"native-tls-client\" and feature \"rustls-client\" cannot be enabled at the same time");
+compile_error!(
+    "feature \"native-tls-client\" and feature \"rustls-client\" cannot be enabled at the same time"
+);
 
 #[cfg(all(not(feature = "native-tls-client"), not(feature = "rustls-client")))]
 compile_error!("feature \"native-tls-client\" or feature \"rustls-client\" must be enabled");

@@ -1,12 +1,12 @@
 use std::{path::PathBuf, sync::Arc};
 
 use clap::{Args, Parser};
-use http_mitm_proxy::{hyper::service::service_fn, moka::sync::Cache, DefaultClient, MitmProxy};
+use http_mitm_proxy::{DefaultClient, MitmProxy, hyper::service::service_fn, moka::sync::Cache};
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use tokio::net::TcpListener;
 use tokio_rustls::{
-    rustls::{self, pki_types::PrivatePkcs8KeyDer, ServerConfig},
     TlsAcceptor,
+    rustls::{self, ServerConfig, pki_types::PrivatePkcs8KeyDer},
 };
 use tracing_subscriber::EnvFilter;
 
