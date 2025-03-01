@@ -17,6 +17,8 @@ resolver = "2"
 [features]
 default = ["native-tls-client"]
 native-tls-client = ["dep:native-tls", "dep:tokio-native-tls"]
+
+# You can use --no-default-feature --features "rustls-client" to remove native-tls from dependencies
 rustls-client = ["dep:webpki-roots"]
 
 [dependencies]
