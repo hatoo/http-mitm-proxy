@@ -8,6 +8,12 @@ use hyper_util::rt::{TokioExecutor, TokioIo};
 use std::task::{Context, Poll};
 use tokio::{net::TcpStream, task::JoinHandle};
 
+#[cfg(all(feature = "native-tls-client", feature = "rustls-client"))]
+compile_error!("feature \"native-tls-client\" and feature \"rustls-client\" cannot be enabled at the same time");
+
+#[cfg(all(not(feature = "native-tls-client"), not(feature = "rustls-client")))]
+compile_error!("feature \"native-tls-client\" or feature \"rustls-client\" must be enabled");
+
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
     #[error("{0} doesn't have an valid host")]
@@ -15,13 +21,20 @@ pub enum Error {
     #[error(transparent)]
     IoError(#[from] std::io::Error),
     #[error(transparent)]
-    NativeTlsError(#[from] tokio_native_tls::native_tls::Error),
-    #[error(transparent)]
     HyperError(#[from] hyper::Error),
     #[error("Failed to connect to {0}, {1}")]
     ConnectError(Uri, hyper::Error),
+
+    #[cfg(feature = "native-tls-client")]
     #[error("Failed to connect with TLS to {0}, {1}")]
     TlsConnectError(Uri, native_tls::Error),
+    #[cfg(feature = "native-tls-client")]
+    #[error(transparent)]
+    NativeTlsError(#[from] tokio_native_tls::native_tls::Error),
+
+    #[cfg(feature = "rustls-client")]
+    #[error("Failed to connect with TLS to {0}, {1}")]
+    TlsConnectError(Uri, std::io::Error),
 }
 
 /// Upgraded connections
@@ -34,24 +47,60 @@ pub struct Upgraded {
 #[derive(Clone)]
 /// Default HTTP client for this crate
 pub struct DefaultClient {
+    #[cfg(feature = "native-tls-client")]
     tls_connector_no_alpn: tokio_native_tls::TlsConnector,
+    #[cfg(feature = "native-tls-client")]
     tls_connector_alpn_h2: tokio_native_tls::TlsConnector,
+
+    #[cfg(feature = "rustls-client")]
+    tls_connector_no_alpn: tokio_rustls::TlsConnector,
+    #[cfg(feature = "rustls-client")]
+    tls_connector_alpn_h2: tokio_rustls::TlsConnector,
+
     /// If true, send_request will returns an Upgraded struct when the response is an upgrade
     /// If false, send_request never returns an Upgraded struct and just copy bidirectional when the response is an upgrade
     pub with_upgrades: bool,
 }
 impl DefaultClient {
-    pub fn new() -> native_tls::Result<Self> {
-        let tls_connector_no_alpn = native_tls::TlsConnector::builder().build()?;
+    #[cfg(feature = "native-tls-client")]
+    pub fn new() -> Self {
+        let tls_connector_no_alpn = native_tls::TlsConnector::builder().build().unwrap();
         let tls_connector_alpn_h2 = native_tls::TlsConnector::builder()
             .request_alpns(&["h2", "http/1.1"])
-            .build()?;
+            .build()
+            .unwrap();
 
-        Ok(Self {
+        Self {
             tls_connector_no_alpn: tokio_native_tls::TlsConnector::from(tls_connector_no_alpn),
             tls_connector_alpn_h2: tokio_native_tls::TlsConnector::from(tls_connector_alpn_h2),
             with_upgrades: false,
-        })
+        }
+    }
+
+    #[cfg(feature = "rustls-client")]
+    pub fn new() -> Self {
+        use std::sync::Arc;
+
+        let mut root_cert_store = tokio_rustls::rustls::RootCertStore::empty();
+        root_cert_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+
+        let tls_connector_no_alpn = tokio_rustls::rustls::ClientConfig::builder()
+            .with_root_certificates(root_cert_store.clone())
+            .with_no_client_auth();
+        let mut tls_connector_alpn_h2 = tokio_rustls::rustls::ClientConfig::builder()
+            .with_root_certificates(root_cert_store.clone())
+            .with_no_client_auth();
+        tls_connector_alpn_h2.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+
+        Self {
+            tls_connector_no_alpn: tokio_rustls::TlsConnector::from(Arc::new(
+                tls_connector_no_alpn,
+            )),
+            tls_connector_alpn_h2: tokio_rustls::TlsConnector::from(Arc::new(
+                tls_connector_alpn_h2,
+            )),
+            with_upgrades: false,
+        }
     }
 
     /// Enable HTTP upgrades
@@ -61,7 +110,16 @@ impl DefaultClient {
         self
     }
 
+    #[cfg(feature = "native-tls-client")]
     fn tls_connector(&self, http_version: Version) -> &tokio_native_tls::TlsConnector {
+        match http_version {
+            Version::HTTP_2 => &self.tls_connector_alpn_h2,
+            _ => &self.tls_connector_no_alpn,
+        }
+    }
+
+    #[cfg(feature = "rustls-client")]
+    fn tls_connector(&self, http_version: Version) -> &tokio_rustls::TlsConnector {
         match http_version {
             Version::HTTP_2 => &self.tls_connector_alpn_h2,
             _ => &self.tls_connector_no_alpn,
@@ -152,17 +210,31 @@ impl DefaultClient {
         let _ = tcp.set_nodelay(true);
 
         if uri.scheme() == Some(&hyper::http::uri::Scheme::HTTPS) {
+            #[cfg(feature = "native-tls-client")]
             let tls = self
                 .tls_connector(http_version)
                 .connect(host, tcp)
                 .await
                 .map_err(|err| Error::TlsConnectError(uri.clone(), err))?;
+            #[cfg(feature = "rustls-client")]
+            let tls = self
+                .tls_connector(http_version)
+                .connect(host.to_string().try_into().expect("Invalid host"), tcp)
+                .await
+                .map_err(|err| Error::TlsConnectError(uri.clone(), err))?;
 
-            if let Ok(Some(true)) = tls
-                .get_ref()
-                .negotiated_alpn()
-                .map(|a| a.map(|b| b == b"h2"))
-            {
+            #[cfg(feature = "native-tls-client")]
+            let is_h2 = matches!(
+                tls.get_ref()
+                    .negotiated_alpn()
+                    .map(|a| a.map(|b| b == b"h2")),
+                Ok(Some(true))
+            );
+
+            #[cfg(feature = "rustls-client")]
+            let is_h2 = tls.get_ref().1.alpn_protocol() == Some(b"h2");
+
+            if is_h2 {
                 let (sender, conn) = client::conn::http2::Builder::new(TokioExecutor::new())
                     .handshake(TokioIo::new(tls))
                     .await

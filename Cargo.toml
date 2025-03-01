@@ -17,6 +17,7 @@ resolver = "2"
 [features]
 default = ["native-tls-client"]
 native-tls-client = ["dep:native-tls", "dep:tokio-native-tls"]
+rustls-client = ["dep:webpki-roots"]
 
 [dependencies]
 tokio = { version = "1.39.3", features = [
@@ -40,6 +41,8 @@ moka = { version = "0.12.8", features = ["sync"] }
 
 native-tls = { version = "0.2.12", features = ["alpn"], optional = true }
 tokio-native-tls = { version = "0.3.1", optional = true }
+
+webpki-roots = { version = "0.26.8", optional = true }
 
 [dev-dependencies]
 axum = { version = "0.8.1", features = ["http2"] }
