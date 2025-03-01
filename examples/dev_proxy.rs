@@ -82,7 +82,7 @@ async fn main() {
         Some(Cache::new(128)),
     );
 
-    let client = DefaultClient::new().unwrap();
+    let client = DefaultClient::new();
     let proxy = proxy
         .bind(
             ("127.0.0.1", 3003),

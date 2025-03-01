@@ -14,6 +14,13 @@ resolver = "2"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[features]
+default = ["native-tls-client"]
+native-tls-client = ["dep:native-tls", "dep:tokio-native-tls"]
+
+# You can use --no-default-feature --features "rustls-client" to remove native-tls from dependencies
+rustls-client = ["dep:webpki-roots"]
+
 [dependencies]
 tokio = { version = "1.39.3", features = [
     "macros",
@@ -29,12 +36,15 @@ bytes = "1.7.1"
 http-body-util = "0.1.0"
 rcgen = "0.13.1"
 tokio-rustls = "0.26.1"
-tokio-native-tls = "0.3.1"
 tracing = "0.1.40"
 hyper-util = { version = "0.1.7", features = ["tokio"] }
-native-tls = { version = "0.2.12", features = ["alpn"] }
 thiserror = "2.0.11"
 moka = { version = "0.12.8", features = ["sync"] }
+
+native-tls = { version = "0.2.12", features = ["alpn"], optional = true }
+tokio-native-tls = { version = "0.3.1", optional = true }
+
+webpki-roots = { version = "0.26.8", optional = true }
 
 [dev-dependencies]
 axum = { version = "0.8.1", features = ["http2"] }

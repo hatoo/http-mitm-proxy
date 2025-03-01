@@ -92,7 +92,7 @@ async fn main() {
     );
     let proxy = Arc::new(proxy);
 
-    let client = DefaultClient::new().unwrap();
+    let client = DefaultClient::new();
 
     let listener = TcpListener::bind(("127.0.0.1", 3003)).await.unwrap();
 
