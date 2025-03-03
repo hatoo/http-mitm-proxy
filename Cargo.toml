@@ -1,6 +1,6 @@
 [package]
 name = "http-mitm-proxy"
-version = "0.13.0"
+version = "0.14.0"
 description = "A HTTP proxy server library intended to be a backend of application like Burp proxy."
 readme = "README.md"
 repository = "https://github.com/hatoo/http-mitm-proxy"
@@ -16,9 +16,10 @@ resolver = "2"
 
 [features]
 default = ["native-tls-client"]
-native-tls-client = ["dep:native-tls", "dep:tokio-native-tls"]
 
-# You can use --no-default-feature --features "rustls-client" to remove native-tls from dependencies
+# You can choose one of the following TLS backends for DefaultClient.
+# Or you can drop DefaultClient with setting no-default-features = true
+native-tls-client = ["dep:native-tls", "dep:tokio-native-tls"]
 rustls-client = ["dep:webpki-roots"]
 
 [dependencies]
