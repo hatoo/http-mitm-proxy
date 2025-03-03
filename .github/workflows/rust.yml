@@ -20,6 +20,8 @@ jobs:
     - uses: Swatinem/rust-cache@v2
     - name: Build
       run: cargo build --verbose
+    - name: Build
+      run: cargo build --verbose --no-default-features
     - name: Run tests
       run: cargo test --verbose
     - name: Run tests --no-default-features --features rustls-client
