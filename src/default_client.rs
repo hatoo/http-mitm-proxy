@@ -1,3 +1,5 @@
+#![cfg(any(feature = "native-tls-client", feature = "rustls-client"))]
+
 use bytes::Bytes;
 use http_body_util::Empty;
 use hyper::{
@@ -13,9 +15,6 @@ use tokio::{net::TcpStream, task::JoinHandle};
 compile_error!(
     "feature \"native-tls-client\" and feature \"rustls-client\" cannot be enabled at the same time"
 );
-
-#[cfg(all(not(feature = "native-tls-client"), not(feature = "rustls-client")))]
-compile_error!("feature \"native-tls-client\" or feature \"rustls-client\" must be enabled");
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {

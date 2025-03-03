@@ -21,9 +21,11 @@ pub use moka;
 #[cfg(feature = "native-tls-client")]
 pub use tokio_native_tls;
 
+#[cfg(any(feature = "native-tls-client", feature = "rustls-client"))]
 pub mod default_client;
 mod tls;
 
+#[cfg(any(feature = "native-tls-client", feature = "rustls-client"))]
 pub use default_client::DefaultClient;
 
 #[derive(Clone)]
