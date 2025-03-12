@@ -26,3 +26,19 @@ jobs:
       run: cargo test --verbose
     - name: Run tests --no-default-features --features rustls-client
       run: cargo test --verbose --no-default-features --features rustls-client
+  clippy:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    - uses: dtolnay/rust-toolchain@stable
+    - uses: Swatinem/rust-cache@v2
+    - name: Clippy
+      run: cargo clippy --verbose -- -D warnings
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    - uses: dtolnay/rust-toolchain@stable
+    - uses: Swatinem/rust-cache@v2
+    - name: Clippy
+      run: cargo fmt -- --check
