@@ -63,6 +63,12 @@ pub struct DefaultClient {
     /// If false, send_request never returns an Upgraded struct and just copy bidirectional when the response is an upgrade
     pub with_upgrades: bool,
 }
+impl Default for DefaultClient {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DefaultClient {
     #[cfg(feature = "native-tls-client")]
     pub fn new() -> Self {
