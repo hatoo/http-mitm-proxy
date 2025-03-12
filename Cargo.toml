@@ -39,7 +39,7 @@ rcgen = "0.13.1"
 tokio-rustls = "0.26.1"
 tracing = "0.1.40"
 hyper-util = { version = "0.1.7", features = ["tokio"] }
-thiserror = "2.0.11"
+thiserror = "2.0.12"
 moka = { version = "0.12.8", features = ["sync"] }
 
 native-tls = { version = "0.2.12", features = ["alpn"], optional = true }
