@@ -21,6 +21,12 @@ use moka::sync::Cache;
 
 static PORT: AtomicU16 = AtomicU16::new(3666);
 
+#[ctor::ctor]
+#[cfg(test)]
+fn init_subscriber() {
+    tracing_subscriber::fmt::init();
+}
+
 fn get_port() -> u16 {
     PORT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }

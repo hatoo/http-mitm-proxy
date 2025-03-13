@@ -50,6 +50,7 @@ webpki-roots = { version = "0.26.8", optional = true }
 [dev-dependencies]
 axum = { version = "0.8.1", features = ["http2"] }
 clap = { version = "4.5.16", features = ["derive"] }
+ctor = "0.4.1"
 rcgen = { version = "0.13.1", features = ["x509-parser"] }
 reqwest = { version = "0.12.7", features = ["native-tls-alpn"] }
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
