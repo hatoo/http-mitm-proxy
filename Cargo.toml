@@ -23,7 +23,7 @@ native-tls-client = ["dep:native-tls", "dep:tokio-native-tls"]
 rustls-client = ["dep:webpki-roots"]
 
 [dependencies]
-tokio = { version = "1.39.3", features = [
+tokio = { version = "1.44.1", features = [
     "macros",
     "rt",
     "rt-multi-thread",
@@ -38,7 +38,7 @@ http-body-util = "0.1.0"
 rcgen = "0.13.1"
 tokio-rustls = "0.26.1"
 tracing = "0.1.40"
-hyper-util = { version = "0.1.7", features = ["tokio"] }
+hyper-util = { version = "0.1.11", features = ["tokio"] }
 thiserror = "2.0.12"
 moka = { version = "0.12.8", features = ["sync"] }
 
@@ -48,10 +48,10 @@ tokio-native-tls = { version = "0.3.1", optional = true }
 webpki-roots = { version = "0.26.8", optional = true }
 
 [dev-dependencies]
-axum = { version = "0.8.1", features = ["http2"] }
-clap = { version = "4.5.16", features = ["derive"] }
+axum = { version = "0.8.3", features = ["http2"] }
+clap = { version = "4.5.35", features = ["derive"] }
 ctor = "0.4.1"
 rcgen = { version = "0.13.1", features = ["x509-parser"] }
-reqwest = { version = "0.12.7", features = ["native-tls-alpn"] }
+reqwest = { version = "0.12.15", features = ["native-tls-alpn"] }
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
-winnow = "0.7.2"
+winnow = "0.7.4"
