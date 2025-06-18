@@ -227,7 +227,12 @@ impl DefaultClient {
             #[cfg(feature = "rustls-client")]
             let tls = self
                 .tls_connector(http_version)
-                .connect(host.to_string().try_into().expect("Invalid host"), tcp)
+                .connect(
+                    host.to_string()
+                        .try_into()
+                        .map_err(|_| Error::InvalidHost(uri.clone()))?,
+                    tcp,
+                )
                 .await
                 .map_err(|err| Error::TlsConnectError(uri.clone(), err))?;
 
@@ -293,10 +298,18 @@ where
             SendRequest::Http1(sender) => {
                 if req.version() == hyper::Version::HTTP_2 {
                     if let Some(authority) = req.uri().authority().cloned() {
-                        req.headers_mut().insert(
-                            header::HOST,
-                            authority.as_str().parse().expect("Invalid authority"),
-                        );
+                        match authority.as_str().parse() {
+                            Ok(host_value) => {
+                                req.headers_mut().insert(header::HOST, host_value);
+                            }
+                            Err(err) => {
+                                tracing::warn!(
+                                    "Failed to parse authority '{}' as HOST header: {}",
+                                    authority,
+                                    err
+                                );
+                            }
+                        }
                     }
                 }
                 remove_authority(&mut req);
