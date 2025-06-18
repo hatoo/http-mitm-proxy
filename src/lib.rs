@@ -244,17 +244,19 @@ where
     fn get_certified_key(&self, host: String) -> Option<CertifiedKeyDer> {
         self.root_cert.as_ref().and_then(|root_cert| {
             if let Some(cache) = self.cert_cache.as_ref() {
-                Some(cache.get_with(host.clone(), move || {
-                    generate_cert(host, root_cert.borrow())
-                        .map_err(|err| {
-                            tracing::error!("Failed to generate certificate for host: {}", err);
-                        })
-                        .unwrap()
-                }))
+                // Try to get from cache, but handle generation errors gracefully
+                cache
+                    .try_get_with(host.clone(), move || {
+                        generate_cert(host, root_cert.borrow())
+                    })
+                    .map_err(|err| {
+                        tracing::error!("Failed to generate certificate for host: {}", err);
+                    })
+                    .ok()
             } else {
                 generate_cert(host, root_cert.borrow())
                     .map_err(|err| {
-                        tracing::error!("Failed to generate certificate: {}", err);
+                        tracing::error!("Failed to generate certificate for host: {}", err);
                     })
                     .ok()
             }
@@ -300,7 +302,18 @@ fn inject_authority<B>(request_middleman: &mut Request<B>, authority: hyper::htt
     let mut parts = request_middleman.uri().clone().into_parts();
     parts.scheme = Some(hyper::http::uri::Scheme::HTTPS);
     if parts.authority.is_none() {
-        parts.authority = Some(authority);
+        parts.authority = Some(authority.clone());
     }
-    *request_middleman.uri_mut() = hyper::http::uri::Uri::from_parts(parts).unwrap();
+
+    match hyper::http::uri::Uri::from_parts(parts) {
+        Ok(uri) => *request_middleman.uri_mut() = uri,
+        Err(err) => {
+            tracing::error!(
+                "Failed to inject authority '{}' into URI: {}",
+                authority,
+                err
+            );
+            // Keep the original URI if injection fails
+        }
+    }
 }
