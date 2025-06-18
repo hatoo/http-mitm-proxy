@@ -252,7 +252,7 @@ where
             } else {
                 generate_cert(host, root_cert.borrow())
                     .map_err(|err| {
-                        tracing::error!("Failed to generate certificate for host: {}", err);
+                        tracing::error!("Failed to generate certificate for host {}: {}", host, err);
                     })
                     .ok()
             }
