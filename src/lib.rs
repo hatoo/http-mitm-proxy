@@ -244,15 +244,17 @@ where
     fn get_certified_key(&self, host: String) -> Option<CertifiedKeyDer> {
         self.root_cert.as_ref().and_then(|root_cert| {
             if let Some(cache) = self.cert_cache.as_ref() {
-                cache.get_with(host.clone(), move || {
-                    generate_cert(host, root_cert.borrow()).map_err(|err| {
-                        tracing::error!("Failed to generate certificate for host: {}", err);
-                    }).ok()
-                })
+                Some(cache.get_with(host.clone(), move || {
+                    generate_cert(host, root_cert.borrow())
+                        .map_err(|err| {
+                            tracing::error!("Failed to generate certificate for host: {}", err);
+                        })
+                        .unwrap()
+                }))
             } else {
                 generate_cert(host, root_cert.borrow())
                     .map_err(|err| {
-                        tracing::error!("Failed to generate certificate for host {}: {}", host, err);
+                        tracing::error!("Failed to generate certificate: {}", err);
                     })
                     .ok()
             }
