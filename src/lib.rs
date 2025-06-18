@@ -77,8 +77,12 @@ where
 
         Ok(async move {
             loop {
-                let Ok((stream, _)) = listener.accept().await else {
-                    continue;
+                let (stream, _) = match listener.accept().await {
+                    Ok(conn) => conn,
+                    Err(err) => {
+                        tracing::warn!("Failed to accept connection: {}", err);
+                        continue;
+                    }
                 };
 
                 let service = service.clone();
@@ -140,12 +144,16 @@ where
                     };
 
                     tokio::spawn(async move {
-                        let Ok(client) = hyper::upgrade::on(req).await else {
-                            tracing::error!(
-                                "Bad CONNECT request: {}, Reason: Invalid Upgrade",
-                                connect_authority
-                            );
-                            return;
+                        let client = match hyper::upgrade::on(req).await {
+                            Ok(client) => client,
+                            Err(err) => {
+                                tracing::error!(
+                                    "Failed to upgrade CONNECT request for {}: {}",
+                                    connect_authority,
+                                    err
+                                );
+                                return;
+                            }
                         };
                         if let Some(server_config) =
                             proxy.server_config(connect_authority.host().to_string(), true)
@@ -196,17 +204,22 @@ where
                                     .await
                             };
 
-                            if let Err(_err) = res {
-                                // Suppress error because if we serving HTTPS proxy server and forward to HTTPS server, it will always error when closing connection.
-                                // tracing::error!("Error in proxy: {}", err);
+                            if let Err(err) = res {
+                                tracing::debug!("Connection closed: {}", err);
                             }
                         } else {
-                            let Ok(mut server) =
-                                TcpStream::connect(connect_authority.as_str()).await
-                            else {
-                                tracing::error!("Failed to connect to {}", connect_authority);
-                                return;
-                            };
+                            let mut server =
+                                match TcpStream::connect(connect_authority.as_str()).await {
+                                    Ok(server) => server,
+                                    Err(err) => {
+                                        tracing::error!(
+                                            "Failed to connect to {}: {}",
+                                            connect_authority,
+                                            err
+                                        );
+                                        return;
+                                    }
+                                };
                             let _ = tokio::io::copy_bidirectional(
                                 &mut TokioIo::new(client),
                                 &mut server,
@@ -229,13 +242,21 @@ where
     }
 
     fn get_certified_key(&self, host: String) -> Option<CertifiedKeyDer> {
-        self.root_cert.as_ref().map(|root_cert| {
+        self.root_cert.as_ref().and_then(|root_cert| {
             if let Some(cache) = self.cert_cache.as_ref() {
-                cache.get_with(host.clone(), move || {
+                Some(cache.get_with(host.clone(), move || {
                     generate_cert(host, root_cert.borrow())
-                })
+                        .map_err(|err| {
+                            tracing::error!("Failed to generate certificate for host: {}", err);
+                        })
+                        .unwrap()
+                }))
             } else {
                 generate_cert(host, root_cert.borrow())
+                    .map_err(|err| {
+                        tracing::error!("Failed to generate certificate: {}", err);
+                    })
+                    .ok()
             }
         })
     }
