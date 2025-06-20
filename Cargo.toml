@@ -1,6 +1,6 @@
 [package]
 name = "http-mitm-proxy"
-version = "0.14.0"
+version = "0.15.0"
 description = "A HTTP proxy server library intended to be a backend of application like Burp proxy."
 readme = "README.md"
 repository = "https://github.com/hatoo/http-mitm-proxy"
@@ -45,7 +45,7 @@ moka = { version = "0.12.8", features = ["sync"] }
 native-tls = { version = "0.2.12", features = ["alpn"], optional = true }
 tokio-native-tls = { version = "0.3.1", optional = true }
 
-webpki-roots = { version = "0.26.8", optional = true }
+webpki-roots = { version = "1.0.1", optional = true }
 
 [dev-dependencies]
 axum = { version = "0.8.3", features = ["http2"] }
