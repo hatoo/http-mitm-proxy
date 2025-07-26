@@ -118,8 +118,7 @@ async fn main() {
                         req.headers_mut().insert(
                             hyper::header::HOST,
                             hyper::header::HeaderValue::from_maybe_shared(format!(
-                                "127.0.0.1:{}",
-                                port
+                                "127.0.0.1:{port}"
                             ))
                             .unwrap(),
                         );
@@ -128,8 +127,7 @@ async fn main() {
                         parts.scheme = Some(hyper::http::uri::Scheme::HTTP);
                         parts.authority = Some(
                             hyper::http::uri::Authority::from_maybe_shared(format!(
-                                "127.0.0.1:{}",
-                                port
+                                "127.0.0.1:{port}"
                             ))
                             .unwrap(),
                         );

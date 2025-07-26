@@ -27,7 +27,7 @@ pub fn generate_cert(
 
     let key_pair = rcgen::KeyPair::generate()?;
 
-    let cert = cert_params.signed_by(&key_pair, &issuer)?;
+    let cert = cert_params.signed_by(&key_pair, issuer)?;
 
     Ok(CertifiedKeyDer {
         cert_der: cert.der().to_vec(),

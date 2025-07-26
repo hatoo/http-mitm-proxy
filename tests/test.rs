@@ -62,16 +62,16 @@ async fn bind_app(app: Router) -> (u16, impl std::future::Future<Output = ()>) {
 
 fn client(proxy_port: u16) -> reqwest::Client {
     reqwest::Client::builder()
-        .proxy(reqwest::Proxy::http(format!("http://127.0.0.1:{}", proxy_port)).unwrap())
-        .proxy(reqwest::Proxy::https(format!("http://127.0.0.1:{}", proxy_port)).unwrap())
+        .proxy(reqwest::Proxy::http(format!("http://127.0.0.1:{proxy_port}")).unwrap())
+        .proxy(reqwest::Proxy::https(format!("http://127.0.0.1:{proxy_port}")).unwrap())
         .build()
         .unwrap()
 }
 
 fn client_tls(proxy_port: u16, cert: &rcgen::Certificate) -> reqwest::Client {
     reqwest::Client::builder()
-        .proxy(reqwest::Proxy::http(format!("http://127.0.0.1:{}", proxy_port)).unwrap())
-        .proxy(reqwest::Proxy::https(format!("http://127.0.0.1:{}", proxy_port)).unwrap())
+        .proxy(reqwest::Proxy::http(format!("http://127.0.0.1:{proxy_port}")).unwrap())
+        .proxy(reqwest::Proxy::https(format!("http://127.0.0.1:{proxy_port}")).unwrap())
         .add_root_certificate(reqwest::Certificate::from_der(cert.der()).unwrap())
         .build()
         .unwrap()
@@ -145,7 +145,7 @@ async fn test_simple_http() {
     let client = client(proxy_port);
 
     let res = client
-        .get(format!("http://127.0.0.1:{}/", port))
+        .get(format!("http://127.0.0.1:{port}/"))
         .send()
         .await
         .unwrap();
@@ -184,7 +184,7 @@ async fn test_modify_http() {
     let client = client(proxy_port);
 
     let res = client
-        .get(format!("http://127.0.0.1:{}/", port))
+        .get(format!("http://127.0.0.1:{port}/"))
         .send()
         .await
         .unwrap();
@@ -216,7 +216,7 @@ async fn test_sse_http() {
 
     let client = client(proxy_port);
     let res = client
-        .get(format!("http://127.0.0.1:{}/sse", port))
+        .get(format!("http://127.0.0.1:{port}/sse"))
         .send()
         .await
         .unwrap();
@@ -273,7 +273,7 @@ async fn test_simple_https() {
     let client = client_tls(proxy_port, &cert);
 
     let res = client
-        .get(format!("https://127.0.0.1:{}/", port))
+        .get(format!("https://127.0.0.1:{port}/"))
         .send()
         .await
         .unwrap();

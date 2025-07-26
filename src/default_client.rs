@@ -82,20 +82,20 @@ impl DefaultClient {
     #[cfg(feature = "native-tls-client")]
     pub fn new() -> Self {
         Self::try_new().unwrap_or_else(|err| {
-            panic!("Failed to create DefaultClient: {}", err);
+            panic!("Failed to create DefaultClient: {err}");
         })
     }
 
     #[cfg(feature = "native-tls-client")]
     pub fn try_new() -> Result<Self, Error> {
         let tls_connector_no_alpn = native_tls::TlsConnector::builder().build().map_err(|e| {
-            Error::TlsConnectorError(format!("Failed to build no-ALPN connector: {}", e))
+            Error::TlsConnectorError(format!("Failed to build no-ALPN connector: {e}"))
         })?;
         let tls_connector_alpn_h2 = native_tls::TlsConnector::builder()
             .request_alpns(&["h2", "http/1.1"])
             .build()
             .map_err(|e| {
-                Error::TlsConnectorError(format!("Failed to build ALPN-H2 connector: {}", e))
+                Error::TlsConnectorError(format!("Failed to build ALPN-H2 connector: {e}"))
             })?;
 
         Ok(Self {
