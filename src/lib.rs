@@ -30,11 +30,11 @@ pub use default_client::DefaultClient;
 
 #[derive(Clone)]
 /// The main struct to run proxy server
-pub struct MitmProxy<C> {
-    /// Root certificate to sign fake certificates. You may need to trust this certificate on client application to use HTTPS.
+pub struct MitmProxy<I> {
+    /// Root issuer to sign fake certificates. You may need to trust this issuer on client application to use HTTPS.
     ///
     /// If None, proxy will just tunnel HTTPS traffic and will not observe HTTPS traffic.
-    pub root_cert: Option<C>,
+    pub root_issuer: Option<I>,
     /// Cache to store generated certificates. If None, cache will not be used.
     /// If root_cert is None, cache will not be used.
     ///
@@ -42,19 +42,19 @@ pub struct MitmProxy<C> {
     pub cert_cache: Option<Cache<String, CertifiedKeyDer>>,
 }
 
-impl<C> MitmProxy<C> {
+impl<I> MitmProxy<I> {
     /// Create a new MitmProxy
-    pub fn new(root_cert: Option<C>, cache: Option<Cache<String, CertifiedKeyDer>>) -> Self {
+    pub fn new(root_issuer: Option<I>, cache: Option<Cache<String, CertifiedKeyDer>>) -> Self {
         Self {
-            root_cert,
+            root_issuer,
             cert_cache: cache,
         }
     }
 }
 
-impl<C> MitmProxy<C>
+impl<I> MitmProxy<I>
 where
-    C: Borrow<rcgen::Issuer<'static, rcgen::KeyPair>> + Send + Sync + 'static,
+    I: Borrow<rcgen::Issuer<'static, rcgen::KeyPair>> + Send + Sync + 'static,
 {
     /// Bind to a socket address and return a future that runs the proxy server.
     /// URL for requests that passed to service are full URL including scheme.
@@ -242,19 +242,19 @@ where
     }
 
     fn get_certified_key(&self, host: String) -> Option<CertifiedKeyDer> {
-        self.root_cert.as_ref().and_then(|root_cert| {
+        self.root_issuer.as_ref().and_then(|root_issuer| {
             if let Some(cache) = self.cert_cache.as_ref() {
                 // Try to get from cache, but handle generation errors gracefully
                 cache
                     .try_get_with(host.clone(), move || {
-                        generate_cert(host, root_cert.borrow())
+                        generate_cert(host, root_issuer.borrow())
                     })
                     .map_err(|err| {
                         tracing::error!("Failed to generate certificate for host: {}", err);
                     })
                     .ok()
             } else {
-                generate_cert(host, root_cert.borrow())
+                generate_cert(host, root_issuer.borrow())
                     .map_err(|err| {
                         tracing::error!("Failed to generate certificate for host: {}", err);
                     })
