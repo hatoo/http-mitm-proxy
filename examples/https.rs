@@ -16,18 +16,18 @@ use tracing_subscriber::EnvFilter;
 #[derive(Parser)]
 struct Opt {
     #[clap(flatten)]
-    external_cert: Option<ExternalCert>,
+    external_issuer: Option<ExternalIssuer>,
 }
 
 #[derive(Args, Debug)]
-struct ExternalCert {
+struct ExternalIssuer {
     #[arg(required = false)]
     cert: PathBuf,
     #[arg(required = false)]
     private_key: PathBuf,
 }
 
-fn make_root_cert() -> rcgen::Issuer<'static, rcgen::KeyPair> {
+fn make_root_issuer() -> rcgen::Issuer<'static, rcgen::KeyPair> {
     let mut params = rcgen::CertificateParams::default();
 
     params.distinguished_name = rcgen::DistinguishedName::new();
@@ -71,19 +71,20 @@ async fn main() {
         .with_line_number(true)
         .init();
 
-    let root_cert = if let Some(external_cert) = opt.external_cert {
+    let root_issuer = if let Some(external_issuer) = opt.external_issuer {
         // Use existing key
-        let signing_key =
-            rcgen::KeyPair::from_pem(&std::fs::read_to_string(&external_cert.private_key).unwrap())
-                .unwrap();
+        let signing_key = rcgen::KeyPair::from_pem(
+            &std::fs::read_to_string(&external_issuer.private_key).unwrap(),
+        )
+        .unwrap();
 
         rcgen::Issuer::from_ca_cert_pem(
-            &std::fs::read_to_string(&external_cert.cert).unwrap(),
+            &std::fs::read_to_string(&external_issuer.cert).unwrap(),
             signing_key,
         )
         .unwrap()
     } else {
-        make_root_cert()
+        make_root_issuer()
     };
 
     // Reusing the same root cert for proxy server
@@ -91,10 +92,10 @@ async fn main() {
         .with_no_client_auth()
         .with_single_cert(
             vec![CertificateDer::from(
-                root_cert.key().public_key_raw().to_vec(),
+                root_issuer.key().public_key_raw().to_vec(),
             )],
             rustls::pki_types::PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(
-                root_cert.key().serialize_der(),
+                root_issuer.key().serialize_der(),
             )),
         )
         .unwrap();
@@ -102,7 +103,7 @@ async fn main() {
 
     let proxy = MitmProxy::new(
         // This is the root cert that will be used to sign the fake certificates
-        Some(root_cert),
+        Some(root_issuer),
         Some(Cache::new(128)),
     );
     let proxy = Arc::new(proxy);
