@@ -3,45 +3,64 @@ use std::{path::PathBuf, sync::Arc};
 use clap::{Args, Parser};
 use http_mitm_proxy::{DefaultClient, MitmProxy, hyper::service::service_fn, moka::sync::Cache};
 use hyper_util::rt::{TokioExecutor, TokioIo};
+use rustls_pki_types::pem::PemObject;
 use tokio::net::TcpListener;
 use tokio_rustls::{
     TlsAcceptor,
-    rustls::{self, ServerConfig, pki_types::PrivatePkcs8KeyDer},
+    rustls::{
+        self, ServerConfig,
+        pki_types::{CertificateDer, PrivatePkcs8KeyDer},
+    },
 };
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
 struct Opt {
     #[clap(flatten)]
-    external_cert: Option<ExternalCert>,
+    external_issuer: Option<ExternalIssuer>,
 }
 
 #[derive(Args, Debug)]
-struct ExternalCert {
+struct ExternalIssuer {
     #[arg(required = false)]
     cert: PathBuf,
     #[arg(required = false)]
     private_key: PathBuf,
 }
 
-fn make_root_cert() -> rcgen::CertifiedKey {
-    let mut param = rcgen::CertificateParams::default();
+fn make_root_issuer() -> (rcgen::Issuer<'static, rcgen::KeyPair>, Vec<u8>) {
+    let mut params = rcgen::CertificateParams::default();
 
-    param.distinguished_name = rcgen::DistinguishedName::new();
-    param.distinguished_name.push(
+    params.distinguished_name = rcgen::DistinguishedName::new();
+    params.distinguished_name.push(
         rcgen::DnType::CommonName,
         rcgen::DnValue::Utf8String("<HTTP-MITM-PROXY CA>".to_string()),
     );
-    param.key_usages = vec![
+    params.key_usages = vec![
         rcgen::KeyUsagePurpose::KeyCertSign,
         rcgen::KeyUsagePurpose::CrlSign,
     ];
-    param.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+    params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
 
-    let key_pair = rcgen::KeyPair::generate().unwrap();
-    let cert = param.self_signed(&key_pair).unwrap();
+    let signing_key = rcgen::KeyPair::generate().unwrap();
 
-    rcgen::CertifiedKey { cert, key_pair }
+    let cert = params.self_signed(&signing_key).unwrap();
+
+    println!();
+    println!("Trust this cert if you want to use HTTPS");
+    println!();
+    println!("{}", cert.pem());
+    println!();
+
+    /*
+        Save this cert to ca.crt and use it with curl like this:
+        curl https://www.google.com -x http://127.0.0.1:3003 --cacert ca.crt
+    */
+
+    println!("Private key");
+    println!("{}", signing_key.serialize_pem());
+
+    (rcgen::Issuer::new(params, signing_key), cert.der().to_vec())
 }
 
 #[tokio::main]
@@ -53,33 +72,35 @@ async fn main() {
         .with_line_number(true)
         .init();
 
-    let root_cert = if let Some(external_cert) = opt.external_cert {
+    let (root_issuer, cert_der) = if let Some(external_issuer) = opt.external_issuer {
         // Use existing key
-        let param = rcgen::CertificateParams::from_ca_cert_pem(
-            &std::fs::read_to_string(&external_cert.cert).unwrap(),
+        let signing_key = rcgen::KeyPair::from_pem(
+            &std::fs::read_to_string(&external_issuer.private_key).unwrap(),
         )
         .unwrap();
-        let key_pair =
-            rcgen::KeyPair::from_pem(&std::fs::read_to_string(&external_cert.private_key).unwrap())
-                .unwrap();
 
-        let cert = param.self_signed(&key_pair).unwrap();
+        let cert_pem = std::fs::read_to_string(&external_issuer.cert).unwrap();
+        let cert = rustls_pki_types::CertificateDer::from_pem_slice(cert_pem.as_bytes()).unwrap();
 
-        rcgen::CertifiedKey { cert, key_pair }
+        (
+            rcgen::Issuer::from_ca_cert_pem(
+                &std::fs::read_to_string(&external_issuer.cert).unwrap(),
+                signing_key,
+            )
+            .unwrap(),
+            cert.to_vec(),
+        )
     } else {
-        make_root_cert()
+        make_root_issuer()
     };
-
-    let root_cert_pem = root_cert.cert.pem();
-    let root_cert_key = root_cert.key_pair.serialize_pem();
 
     // Reusing the same root cert for proxy server
     let mut server_config = ServerConfig::builder()
         .with_no_client_auth()
         .with_single_cert(
-            vec![root_cert.cert.der().clone()],
+            vec![CertificateDer::from(cert_der)],
             rustls::pki_types::PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(
-                root_cert.key_pair.serialize_der(),
+                root_issuer.key().serialize_der(),
             )),
         )
         .unwrap();
@@ -87,7 +108,7 @@ async fn main() {
 
     let proxy = MitmProxy::new(
         // This is the root cert that will be used to sign the fake certificates
-        Some(root_cert),
+        Some(root_issuer),
         Some(Cache::new(128)),
     );
     let proxy = Arc::new(proxy);
@@ -151,20 +172,6 @@ async fn main() {
     };
 
     println!("HTTPS Proxy is listening on https://127.0.0.1:3003");
-
-    println!();
-    println!("Trust this cert if you want to use HTTPS");
-    println!();
-    println!("{}", root_cert_pem);
-    println!();
-
-    /*
-        You can test HTTPS proxy with curl like this:
-        curl -x https://localhost:3003 https://example.com --insecure --proxy-insecure
-    */
-
-    println!("Private key");
-    println!("{}", root_cert_key);
 
     server.await;
 }

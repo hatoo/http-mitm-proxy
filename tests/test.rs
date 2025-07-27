@@ -31,24 +31,23 @@ fn get_port() -> u16 {
     PORT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
-fn root_cert() -> rcgen::CertifiedKey {
-    let mut param = rcgen::CertificateParams::default();
+fn root_cert() -> rcgen::Issuer<'static, rcgen::KeyPair> {
+    let mut params = rcgen::CertificateParams::default();
 
-    param.distinguished_name = rcgen::DistinguishedName::new();
-    param.distinguished_name.push(
+    params.distinguished_name = rcgen::DistinguishedName::new();
+    params.distinguished_name.push(
         rcgen::DnType::CommonName,
         rcgen::DnValue::Utf8String("<http-mitm-proxy TEST CA>".to_string()),
     );
-    param.key_usages = vec![
+    params.key_usages = vec![
         rcgen::KeyUsagePurpose::KeyCertSign,
         rcgen::KeyUsagePurpose::CrlSign,
     ];
-    param.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+    params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
 
-    let key_pair = rcgen::KeyPair::generate().unwrap();
-    let cert = param.self_signed(&key_pair).unwrap();
+    let signing_key = rcgen::KeyPair::generate().unwrap();
 
-    rcgen::CertifiedKey { cert, key_pair }
+    rcgen::Issuer::new(params, signing_key)
 }
 
 async fn bind_app(app: Router) -> (u16, impl std::future::Future<Output = ()>) {
@@ -63,17 +62,17 @@ async fn bind_app(app: Router) -> (u16, impl std::future::Future<Output = ()>) {
 
 fn client(proxy_port: u16) -> reqwest::Client {
     reqwest::Client::builder()
-        .proxy(reqwest::Proxy::http(format!("http://127.0.0.1:{}", proxy_port)).unwrap())
-        .proxy(reqwest::Proxy::https(format!("http://127.0.0.1:{}", proxy_port)).unwrap())
+        .proxy(reqwest::Proxy::http(format!("http://127.0.0.1:{proxy_port}")).unwrap())
+        .proxy(reqwest::Proxy::https(format!("http://127.0.0.1:{proxy_port}")).unwrap())
         .build()
         .unwrap()
 }
 
-fn client_tls(proxy_port: u16, cert: &rcgen::CertifiedKey) -> reqwest::Client {
+fn client_tls(proxy_port: u16, cert: &rcgen::Certificate) -> reqwest::Client {
     reqwest::Client::builder()
-        .proxy(reqwest::Proxy::http(format!("http://127.0.0.1:{}", proxy_port)).unwrap())
-        .proxy(reqwest::Proxy::https(format!("http://127.0.0.1:{}", proxy_port)).unwrap())
-        .add_root_certificate(reqwest::Certificate::from_der(cert.cert.der()).unwrap())
+        .proxy(reqwest::Proxy::http(format!("http://127.0.0.1:{proxy_port}")).unwrap())
+        .proxy(reqwest::Proxy::https(format!("http://127.0.0.1:{proxy_port}")).unwrap())
+        .add_root_certificate(reqwest::Certificate::from_der(cert.der()).unwrap())
         .build()
         .unwrap()
 }
@@ -106,7 +105,7 @@ where
 async fn setup_tls<B, E, E2, S>(
     app: Router,
     service: S,
-    root_cert: Arc<rcgen::CertifiedKey>,
+    root_cert: Arc<rcgen::Issuer<'static, rcgen::KeyPair>>,
 ) -> (u16, u16)
 where
     B: Body<Data = Bytes, Error = E> + Send + Sync + 'static,
@@ -146,7 +145,7 @@ async fn test_simple_http() {
     let client = client(proxy_port);
 
     let res = client
-        .get(format!("http://127.0.0.1:{}/", port))
+        .get(format!("http://127.0.0.1:{port}/"))
         .send()
         .await
         .unwrap();
@@ -185,7 +184,7 @@ async fn test_modify_http() {
     let client = client(proxy_port);
 
     let res = client
-        .get(format!("http://127.0.0.1:{}/", port))
+        .get(format!("http://127.0.0.1:{port}/"))
         .send()
         .await
         .unwrap();
@@ -217,7 +216,7 @@ async fn test_sse_http() {
 
     let client = client(proxy_port);
     let res = client
-        .get(format!("http://127.0.0.1:{}/sse", port))
+        .get(format!("http://127.0.0.1:{port}/sse"))
         .send()
         .await
         .unwrap();
@@ -233,7 +232,25 @@ async fn test_simple_https() {
     const BODY: &str = "Hello, World!";
     let app = Router::new().route("/", get(|| async move { BODY }));
 
-    let cert = Arc::new(root_cert());
+    let mut params = rcgen::CertificateParams::default();
+
+    params.distinguished_name = rcgen::DistinguishedName::new();
+    params.distinguished_name.push(
+        rcgen::DnType::CommonName,
+        rcgen::DnValue::Utf8String("<http-mitm-proxy TEST CA>".to_string()),
+    );
+    params.key_usages = vec![
+        rcgen::KeyUsagePurpose::KeyCertSign,
+        rcgen::KeyUsagePurpose::CrlSign,
+    ];
+    params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+
+    let signing_key = rcgen::KeyPair::generate().unwrap();
+
+    let cert = params.self_signed(&signing_key).unwrap();
+
+    let issuer = rcgen::Issuer::new(params, signing_key);
+    let issuer = Arc::new(issuer);
 
     let proxy_client = proxy_client();
     let (proxy_port, port) = setup_tls(
@@ -249,14 +266,14 @@ async fn test_simple_https() {
                 proxy_client.send_request(req).await.map(|t| t.0)
             }
         }),
-        cert.clone(),
+        issuer.clone(),
     )
     .await;
 
     let client = client_tls(proxy_port, &cert);
 
     let res = client
-        .get(format!("https://127.0.0.1:{}/", port))
+        .get(format!("https://127.0.0.1:{port}/"))
         .send()
         .await
         .unwrap();
