@@ -3,6 +3,7 @@ use std::{path::PathBuf, sync::Arc};
 use clap::{Args, Parser};
 use http_mitm_proxy::{DefaultClient, MitmProxy, hyper::service::service_fn, moka::sync::Cache};
 use hyper_util::rt::{TokioExecutor, TokioIo};
+use rustls_pki_types::pem::PemObject;
 use tokio::net::TcpListener;
 use tokio_rustls::{
     TlsAcceptor,
@@ -27,7 +28,7 @@ struct ExternalIssuer {
     private_key: PathBuf,
 }
 
-fn make_root_issuer() -> rcgen::Issuer<'static, rcgen::KeyPair> {
+fn make_root_issuer() -> (rcgen::Issuer<'static, rcgen::KeyPair>, Vec<u8>) {
     let mut params = rcgen::CertificateParams::default();
 
     params.distinguished_name = rcgen::DistinguishedName::new();
@@ -59,7 +60,7 @@ fn make_root_issuer() -> rcgen::Issuer<'static, rcgen::KeyPair> {
     println!("Private key");
     println!("{}", signing_key.serialize_pem());
 
-    rcgen::Issuer::new(params, signing_key)
+    (rcgen::Issuer::new(params, signing_key), cert.der().to_vec())
 }
 
 #[tokio::main]
@@ -71,18 +72,24 @@ async fn main() {
         .with_line_number(true)
         .init();
 
-    let root_issuer = if let Some(external_issuer) = opt.external_issuer {
+    let (root_issuer, cert_der) = if let Some(external_issuer) = opt.external_issuer {
         // Use existing key
         let signing_key = rcgen::KeyPair::from_pem(
             &std::fs::read_to_string(&external_issuer.private_key).unwrap(),
         )
         .unwrap();
 
-        rcgen::Issuer::from_ca_cert_pem(
-            &std::fs::read_to_string(&external_issuer.cert).unwrap(),
-            signing_key,
+        let cert_pem = std::fs::read_to_string(&external_issuer.cert).unwrap();
+        let cert = rustls_pki_types::CertificateDer::from_pem_slice(cert_pem.as_bytes()).unwrap();
+
+        (
+            rcgen::Issuer::from_ca_cert_pem(
+                &std::fs::read_to_string(&external_issuer.cert).unwrap(),
+                signing_key,
+            )
+            .unwrap(),
+            cert.to_vec(),
         )
-        .unwrap()
     } else {
         make_root_issuer()
     };
@@ -91,9 +98,7 @@ async fn main() {
     let mut server_config = ServerConfig::builder()
         .with_no_client_auth()
         .with_single_cert(
-            vec![CertificateDer::from(
-                root_issuer.key().public_key_raw().to_vec(),
-            )],
+            vec![CertificateDer::from(cert_der)],
             rustls::pki_types::PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(
                 root_issuer.key().serialize_der(),
             )),

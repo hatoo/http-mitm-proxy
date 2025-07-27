@@ -776,6 +776,7 @@ dependencies = [
  "native-tls",
  "rcgen",
  "reqwest",
+ "rustls-pki-types",
  "thiserror 2.0.12",
  "tokio",
  "tokio-native-tls",
