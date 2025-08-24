@@ -325,19 +325,19 @@ where
     ) -> Result<Response<Incoming>, hyper::Error> {
         match self {
             SendRequest::Http1(sender) => {
-                if req.version() == hyper::Version::HTTP_2 {
-                    if let Some(authority) = req.uri().authority().cloned() {
-                        match authority.as_str().parse::<header::HeaderValue>() {
-                            Ok(host_value) => {
-                                req.headers_mut().insert(header::HOST, host_value);
-                            }
-                            Err(err) => {
-                                tracing::warn!(
-                                    "Failed to parse authority '{}' as HOST header: {}",
-                                    authority,
-                                    err
-                                );
-                            }
+                if req.version() == hyper::Version::HTTP_2
+                    && let Some(authority) = req.uri().authority().cloned()
+                {
+                    match authority.as_str().parse::<header::HeaderValue>() {
+                        Ok(host_value) => {
+                            req.headers_mut().insert(header::HOST, host_value);
+                        }
+                        Err(err) => {
+                            tracing::warn!(
+                                "Failed to parse authority '{}' as HOST header: {}",
+                                authority,
+                                err
+                            );
                         }
                     }
                 }
