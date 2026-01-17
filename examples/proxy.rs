@@ -1,7 +1,9 @@
 use std::path::PathBuf;
 
 use clap::{Args, Parser};
-use http_mitm_proxy::{DefaultClient, MitmProxy, hyper::service::service_fn, moka::sync::Cache};
+use http_mitm_proxy::{
+    DefaultClient, MitmProxy, RemoteAddr, hyper::service::service_fn, moka::sync::Cache,
+};
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
@@ -91,7 +93,7 @@ async fn main() {
                 let client = client.clone();
                 async move {
                     let uri = req.uri().clone();
-                    let remote_addr = req.extensions().get::<std::net::SocketAddr>().unwrap();
+                    let remote_addr = req.extensions().get::<RemoteAddr>().unwrap().0;
                     println!(
                         "Received request from {}: {} {}",
                         remote_addr,
