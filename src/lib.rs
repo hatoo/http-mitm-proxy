@@ -58,6 +58,7 @@ where
 {
     /// Bind to a socket address and return a future that runs the proxy server.
     /// URL for requests that passed to service are full URL including scheme.
+    /// remote address of client is stored in request extensions as std::net::SocketAddr.
     pub async fn bind<A: ToSocketAddrs, S>(
         self,
         addr: A,
@@ -77,7 +78,7 @@ where
 
         Ok(async move {
             loop {
-                let (stream, _) = match listener.accept().await {
+                let (stream, remote_addr) = match listener.accept().await {
                     Ok(conn) => conn,
                     Err(err) => {
                         tracing::warn!("Failed to accept connection: {}", err);
@@ -94,7 +95,10 @@ where
                         .title_case_headers(true)
                         .serve_connection(
                             TokioIo::new(stream),
-                            Self::wrap_service(proxy.clone(), service.clone()),
+                            service_fn(move |mut req| {
+                                req.extensions_mut().insert(remote_addr);
+                                Self::wrap_service(proxy.clone(), service.clone()).call(req)
+                            }),
                         )
                         .with_upgrades()
                         .await

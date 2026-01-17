@@ -91,6 +91,13 @@ async fn main() {
                 let client = client.clone();
                 async move {
                     let uri = req.uri().clone();
+                    let remote_addr = req.extensions().get::<std::net::SocketAddr>().unwrap();
+                    println!(
+                        "Received request from {}: {} {}",
+                        remote_addr,
+                        req.method(),
+                        uri
+                    );
 
                     // You can modify request here
                     // or You can just return response anywhere
