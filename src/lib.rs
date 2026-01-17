@@ -28,6 +28,9 @@ mod tls;
 #[cfg(any(feature = "native-tls-client", feature = "rustls-client"))]
 pub use default_client::DefaultClient;
 
+#[derive(Clone, Copy, Debug)]
+pub struct RemoteAddr(pub std::net::SocketAddr);
+
 #[derive(Clone)]
 /// The main struct to run proxy server
 pub struct MitmProxy<I> {
@@ -58,7 +61,7 @@ where
 {
     /// Bind to a socket address and return a future that runs the proxy server.
     /// URL for requests that passed to service are full URL including scheme.
-    /// remote address of client is stored in request extensions as std::net::SocketAddr.
+    /// remote address of client is stored in request extensions as `RemoteAddr`.
     pub async fn bind<A: ToSocketAddrs, S>(
         self,
         addr: A,
@@ -96,7 +99,7 @@ where
                         .serve_connection(
                             TokioIo::new(stream),
                             service_fn(move |mut req| {
-                                req.extensions_mut().insert(remote_addr);
+                                req.extensions_mut().insert(RemoteAddr(remote_addr));
                                 Self::wrap_service(proxy.clone(), service.clone()).call(req)
                             }),
                         )

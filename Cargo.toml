@@ -1,6 +1,6 @@
 [package]
 name = "http-mitm-proxy"
-version = "0.16.0"
+version = "0.17.0"
 description = "A HTTP proxy server library intended to be a backend of application like Burp proxy."
 readme = "README.md"
 repository = "https://github.com/hatoo/http-mitm-proxy"
@@ -52,7 +52,7 @@ axum = { version = "0.8.3", features = ["http2"] }
 clap = { version = "4.5.35", features = ["derive"] }
 ctor = "0.6.1"
 rcgen = { version = "0.14.3", features = ["x509-parser", "pem"] }
-reqwest = { version = "0.12.15", features = ["native-tls-alpn"] }
+reqwest = { version = "0.13.1" }
 rustls-pki-types = "1.12.0"
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 winnow = "0.7.4"
