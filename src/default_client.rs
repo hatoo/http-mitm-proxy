@@ -426,12 +426,12 @@ impl DefaultClient {
 
                 tokio::spawn(conn);
 
-                if let Some(ref k) = key {
-                    if matches!(k.protocol, ConnectionProtocol::Http2) {
-                        self.pool
-                            .insert_http2_if_absent(k.clone(), sender.clone())
-                            .await;
-                    }
+                if let Some(ref k) = key
+                    && matches!(k.protocol, ConnectionProtocol::Http2)
+                {
+                    self.pool
+                        .insert_http2_if_absent(k.clone(), sender.clone())
+                        .await;
                 }
 
                 Ok(SendRequest::Http2(sender))
