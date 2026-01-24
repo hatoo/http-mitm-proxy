@@ -11,7 +11,7 @@ use axum::{
 };
 use bytes::Bytes;
 use futures::stream;
-use http_mitm_proxy::{DefaultClient, MitmProxy};
+use http_mitm_proxy::{DefaultClient, MitmProxy, RemoteAddr};
 use hyper::{
     Uri,
     body::{Body, Incoming},
@@ -137,7 +137,13 @@ async fn test_simple_http() {
         app,
         service_fn(move |req| {
             let proxy_client = proxy_client.clone();
-            async move { proxy_client.send_request(req).await.map(|t| t.0) }
+            async move {
+                assert!(
+                    req.extensions().get::<RemoteAddr>().is_some(),
+                    "RemoteAddr missing"
+                );
+                proxy_client.send_request(req).await.map(|t| t.0)
+            }
         }),
     )
     .await;
@@ -173,6 +179,10 @@ async fn test_modify_http() {
         service_fn(move |mut req| {
             let proxy_client = proxy_client.clone();
             async move {
+                assert!(
+                    req.extensions().get::<RemoteAddr>().is_some(),
+                    "RemoteAddr missing"
+                );
                 req.headers_mut()
                     .insert("X-test", "modified".parse().unwrap());
                 proxy_client.send_request(req).await.map(|t| t.0)
@@ -209,7 +219,13 @@ async fn test_sse_http() {
         app,
         service_fn(move |req| {
             let proxy_client = proxy_client.clone();
-            async move { proxy_client.send_request(req).await.map(|t| t.0) }
+            async move {
+                assert!(
+                    req.extensions().get::<RemoteAddr>().is_some(),
+                    "RemoteAddr missing"
+                );
+                proxy_client.send_request(req).await.map(|t| t.0)
+            }
         }),
     )
     .await;
@@ -258,6 +274,10 @@ async fn test_simple_https() {
         service_fn(move |mut req| {
             let proxy_client = proxy_client.clone();
             async move {
+                assert!(
+                    req.extensions().get::<RemoteAddr>().is_some(),
+                    "RemoteAddr missing"
+                );
                 let mut parts = req.uri().clone().into_parts();
                 parts.scheme = Some(hyper::http::uri::Scheme::HTTP);
 

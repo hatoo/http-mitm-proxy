@@ -134,7 +134,7 @@ where
         <S::ResBody as Body>::Error: Into<Box<dyn StdError + Send + Sync>>,
         S::Future: Send,
     {
-        service_fn(move |req| {
+        service_fn(move |mut req| {
             let proxy = proxy.clone();
             let mut service = service.clone();
 
@@ -151,6 +151,7 @@ where
                     };
 
                     tokio::spawn(async move {
+                        let remote_addr: Option<RemoteAddr> = req.extensions_mut().remove();
                         let client = match hyper::upgrade::on(req).await {
                             Ok(client) => client,
                             Err(err) => {
@@ -194,6 +195,9 @@ where
                                 let mut service = service.clone();
 
                                 async move {
+                                    if let Some(remote_addr) = remote_addr {
+                                        req.extensions_mut().insert(remote_addr);
+                                    }
                                     inject_authority(&mut req, connect_authority.clone());
                                     service.call(req).await
                                 }
