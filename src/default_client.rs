@@ -281,18 +281,40 @@ impl DefaultClient {
     {
         let target_uri = req.uri().clone();
         let mut send_request = if req.version() == Version::HTTP_2 {
-            let pool_key = ConnectionKey::from_uri(&target_uri, ConnectionProtocol::Http2)?;
-            if let Some(conn) = self.pool.get_http2(&pool_key).await {
-                SendRequest::Http2(conn)
-            } else {
-                self.connect(req.uri(), req.version(), pool_key).await?
+            match ConnectionKey::from_uri(&target_uri, ConnectionProtocol::Http2) {
+                Ok(pool_key) => {
+                    if let Some(conn) = self.pool.get_http2(&pool_key).await {
+                        SendRequest::Http2(conn)
+                    } else {
+                        self.connect(req.uri(), req.version(), Some(pool_key))
+                            .await?
+                    }
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        "ConnectionKey::from_uri failed for HTTP/2 ({}): continuing without pool",
+                        err
+                    );
+                    self.connect(req.uri(), req.version(), None).await?
+                }
             }
         } else {
-            let pool_key = ConnectionKey::from_uri(&target_uri, ConnectionProtocol::Http1)?;
-            if let Some(conn) = self.pool.take_http1(&pool_key).await {
-                SendRequest::Http1(conn)
-            } else {
-                self.connect(req.uri(), req.version(), pool_key).await?
+            match ConnectionKey::from_uri(&target_uri, ConnectionProtocol::Http1) {
+                Ok(pool_key) => {
+                    if let Some(conn) = self.pool.take_http1(&pool_key).await {
+                        SendRequest::Http1(conn)
+                    } else {
+                        self.connect(req.uri(), req.version(), Some(pool_key))
+                            .await?
+                    }
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        "ConnectionKey::from_uri failed for HTTP/1 ({}): continuing without pool",
+                        err
+                    );
+                    self.connect(req.uri(), req.version(), None).await?
+                }
             }
         };
 
@@ -338,8 +360,13 @@ impl DefaultClient {
         } else {
             match send_request {
                 SendRequest::Http1(sender) => {
-                    let pool_key = ConnectionKey::from_uri(&target_uri, ConnectionProtocol::Http1)?;
-                    self.pool.put_http1(pool_key, sender).await;
+                    if let Ok(pool_key) =
+                        ConnectionKey::from_uri(&target_uri, ConnectionProtocol::Http1)
+                    {
+                        self.pool.put_http1(pool_key, sender).await;
+                    } else {
+                        // If we couldn't build a pool key, skip pooling.
+                    }
                 }
                 SendRequest::Http2(_) => {
                     // For HTTP/2 the pool retains a shared sender; no action needed.
@@ -353,7 +380,7 @@ impl DefaultClient {
         &self,
         uri: &Uri,
         http_version: Version,
-        key: ConnectionKey,
+        key: Option<ConnectionKey>,
     ) -> Result<SendRequest, Error> {
         let (host, port, is_tls) = host_port(uri)?;
 
@@ -399,8 +426,12 @@ impl DefaultClient {
 
                 tokio::spawn(conn);
 
-                if matches!(key.protocol, ConnectionProtocol::Http2) {
-                    self.pool.insert_http2_if_absent(key, sender.clone()).await;
+                if let Some(ref k) = key {
+                    if matches!(k.protocol, ConnectionProtocol::Http2) {
+                        self.pool
+                            .insert_http2_if_absent(k.clone(), sender.clone())
+                            .await;
+                    }
                 }
 
                 Ok(SendRequest::Http2(sender))
