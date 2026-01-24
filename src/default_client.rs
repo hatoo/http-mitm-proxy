@@ -100,7 +100,7 @@ impl ConnectionKey {
 #[derive(Clone, Default)]
 struct ConnectionPool {
     http1: Arc<Mutex<HashMap<ConnectionKey, Vec<Http1Sender>>>>,
-    http2: Arc<Mutex<HashMap<ConnectionKey, Arc<Mutex<Http2Sender>>>>>,
+    http2: Arc<Mutex<HashMap<ConnectionKey, Http2Sender>>>,
 }
 
 impl ConnectionPool {
@@ -123,68 +123,23 @@ impl ConnectionPool {
         guard.entry(key).or_default().push(sender);
     }
 
-    async fn get_http2(&self, key: &ConnectionKey) -> Option<Arc<Mutex<Http2Sender>>> {
-        let maybe = {
-            let guard = self.http2.lock().await;
-            guard.get(key).cloned()
-        };
+    async fn get_http2(&self, key: &ConnectionKey) -> Option<Http2Sender> {
+        let mut guard = self.http2.lock().await;
+        let mut sender = guard.get(key).cloned()?;
 
-        if let Some(sender) = maybe {
-            let alive = {
-                let mut guard = sender.lock().await;
-                sender_alive_http2(&mut guard).await
-            };
+        let alive = sender_alive_http2(&mut sender).await;
 
-            if alive {
-                Some(sender)
-            } else {
-                let mut map = self.http2.lock().await;
-                map.remove(key);
-                None
-            }
+        if alive {
+            Some(sender)
         } else {
+            guard.remove(key);
             None
         }
     }
 
-    async fn insert_http2_if_absent(&self, key: ConnectionKey, sender: Arc<Mutex<Http2Sender>>) {
+    async fn insert_http2_if_absent(&self, key: ConnectionKey, sender: Http2Sender) {
         let mut guard = self.http2.lock().await;
         guard.entry(key).or_insert(sender);
-    }
-
-    async fn has_http1(&self, key: &ConnectionKey) -> bool {
-        let mut guard = self.http1.lock().await;
-        if let Some(vec) = guard.get_mut(key) {
-            while let Some(mut conn) = vec.pop() {
-                if sender_alive_http1(&mut conn).await {
-                    vec.push(conn);
-                    return true;
-                }
-            }
-            guard.remove(key);
-        }
-        false
-    }
-
-    async fn has_http2(&self, key: &ConnectionKey) -> bool {
-        let maybe = {
-            let guard = self.http2.lock().await;
-            guard.get(key).cloned()
-        };
-
-        if let Some(sender) = maybe {
-            let alive = {
-                let mut guard = sender.lock().await;
-                sender_alive_http2(&mut guard).await
-            };
-            if !alive {
-                let mut map = self.http2.lock().await;
-                map.remove(key);
-            }
-            alive
-        } else {
-            false
-        }
     }
 }
 
@@ -288,21 +243,6 @@ impl DefaultClient {
     pub fn with_upgrades(mut self) -> Self {
         self.with_upgrades = true;
         self
-    }
-
-    /// Check if a cached connection exists for the given URI and HTTP version.
-    pub async fn has_cached_connection(&self, uri: &Uri, version: Version) -> Result<bool, Error> {
-        let protocol = if version == Version::HTTP_2 {
-            ConnectionProtocol::Http2
-        } else {
-            ConnectionProtocol::Http1
-        };
-        let key = ConnectionKey::from_uri(uri, protocol)?;
-        let available = match protocol {
-            ConnectionProtocol::Http1 => self.pool.has_http1(&key).await,
-            ConnectionProtocol::Http2 => self.pool.has_http2(&key).await,
-        };
-        Ok(available)
     }
 
     #[cfg(feature = "native-tls-client")]
@@ -459,12 +399,11 @@ impl DefaultClient {
 
                 tokio::spawn(conn);
 
-                let shared = Arc::new(Mutex::new(sender));
                 if matches!(key.protocol, ConnectionProtocol::Http2) {
-                    self.pool.insert_http2_if_absent(key, shared.clone()).await;
+                    self.pool.insert_http2_if_absent(key, sender.clone()).await;
                 }
 
-                Ok(SendRequest::Http2(shared))
+                Ok(SendRequest::Http2(sender))
             } else {
                 let (sender, conn) = client::conn::http1::Builder::new()
                     .preserve_header_case(true)
@@ -492,7 +431,7 @@ impl DefaultClient {
 
 enum SendRequest {
     Http1(Http1Sender),
-    Http2(Arc<Mutex<Http2Sender>>),
+    Http2(Http2Sender),
 }
 
 impl SendRequest {
@@ -528,8 +467,7 @@ impl SendRequest {
                 if req.version() != hyper::Version::HTTP_2 {
                     req.headers_mut().remove(header::HOST);
                 }
-                let mut guard = sender.lock().await;
-                guard.send_request(req).await
+                sender.send_request(req).await
             }
         }
     }
