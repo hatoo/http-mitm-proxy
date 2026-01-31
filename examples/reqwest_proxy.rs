@@ -131,7 +131,6 @@ where
     let mut req = reqwest::Request::new(parts.method, url);
     *req.headers_mut() = parts.headers;
     req.body_mut().replace(reqwest::Body::wrap(body));
-    *req.version_mut() = parts.version;
 
     req
 }
