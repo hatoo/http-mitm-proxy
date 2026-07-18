@@ -21,7 +21,7 @@ use moka::sync::Cache;
 
 static PORT: AtomicU16 = AtomicU16::new(3666);
 
-#[ctor::ctor]
+#[ctor::ctor(unsafe)]
 #[cfg(test)]
 fn init_subscriber() {
     tracing_subscriber::fmt::init();
