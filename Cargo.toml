@@ -50,7 +50,7 @@ webpki-roots = { version = "1.0.1", optional = true }
 [dev-dependencies]
 axum = { version = "0.8.3", features = ["http2"] }
 clap = { version = "4.5.35", features = ["derive"] }
-ctor = "0.10.1"
+ctor = "1.0.9"
 rcgen = { version = "0.14.3", features = ["x509-parser", "pem"] }
 reqwest = { version = "0.13.1" }
 rustls-pki-types = "1.12.0"
